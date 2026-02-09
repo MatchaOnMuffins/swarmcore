@@ -190,3 +190,100 @@ def test_function_to_tool_schema():
     assert params["properties"]["max_results"]["type"] == "integer"
     assert "query" in params["required"]
     assert "max_results" not in params["required"]
+
+
+# --- Tiered context tests ---
+
+
+async def test_structured_output_instruction_injected(mock_llm: AsyncMock):
+    agent = Agent(name="test", instructions="Be helpful.")
+    ctx = SharedContext()
+
+    await agent.run("Hello", ctx, structured_output=True)
+
+    call_kwargs = mock_llm.call_args
+    system_msg = call_kwargs.kwargs["messages"][0]["content"]
+    assert "<summary>" in system_msg
+    assert "executive summary" in system_msg
+
+
+async def test_structured_output_not_injected_by_default(mock_llm: AsyncMock):
+    agent = Agent(name="test", instructions="Be helpful.")
+    ctx = SharedContext()
+
+    await agent.run("Hello", ctx)
+
+    call_kwargs = mock_llm.call_args
+    system_msg = call_kwargs.kwargs["messages"][0]["content"]
+    assert "<summary>" not in system_msg
+
+
+async def test_expand_param_forwarded_to_context(mock_llm: AsyncMock):
+    agent = Agent(name="writer", instructions="Write.")
+    ctx = SharedContext()
+    ctx.set("a", "Full A output", summary="Summary A")
+    ctx.set("b", "Full B output", summary="Summary B")
+
+    await agent.run("Write", ctx, expand={"b"})
+
+    call_kwargs = mock_llm.call_args
+    system_msg = call_kwargs.kwargs["messages"][0]["content"]
+    assert "Summary A" in system_msg
+    assert "Full A output" not in system_msg
+    assert "Full B output" in system_msg
+
+
+async def test_extra_tools_available_during_run(mock_llm: AsyncMock):
+    """Extra tools passed to run() should be callable by the LLM."""
+
+    def lookup(query: str) -> str:
+        """Look up information.
+
+        query: The search query
+        """
+        return f"Found: {query}"
+
+    tool_call = MagicMock()
+    tool_call.id = "call_extra"
+    tool_call.function.name = "lookup"
+    tool_call.function.arguments = '{"query": "test"}'
+
+    mock_llm.side_effect = [
+        make_mock_response(content=None, tool_calls=[tool_call]),
+        make_mock_response(content="Done."),
+    ]
+
+    agent = Agent(name="test", instructions="Hi.")
+    ctx = SharedContext()
+
+    result = await agent.run("Go", ctx, extra_tools=[lookup])
+
+    assert result.output == "Done."
+    assert result.tool_call_count == 1
+    assert result.tool_calls[0].tool_name == "lookup"
+    assert result.tool_calls[0].result == "Found: test"
+
+
+async def test_extra_tools_do_not_persist(mock_llm: AsyncMock):
+    """Extra tools from one run() should not leak into the next."""
+
+    def ephemeral(x: str) -> str:
+        """Temp tool."""
+        return x
+
+    agent = Agent(name="test", instructions="Hi.")
+    ctx = SharedContext()
+
+    # First run with extra tool
+    await agent.run("Go", ctx, extra_tools=[ephemeral])
+
+    # Second run without — LLM tries to call it, should raise
+    tool_call = MagicMock()
+    tool_call.id = "call_leak"
+    tool_call.function.name = "ephemeral"
+    tool_call.function.arguments = '{"x": "hi"}'
+
+    mock_llm.return_value = make_mock_response(content=None, tool_calls=[tool_call])
+
+    with pytest.raises(AgentError, match="unknown tool"):
+        await agent.run("Go again", ctx)

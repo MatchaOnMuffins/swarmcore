@@ -28,6 +28,7 @@ class AgentResult(BaseModel):
     agent_name: str
     input_task: str
     output: str
+    summary: str = ""
     model: str
     duration_seconds: float
     token_usage: TokenUsage = Field(default_factory=TokenUsage)

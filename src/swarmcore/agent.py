@@ -119,6 +119,9 @@ class Agent:
         context: SharedContext,
         *,
         hooks: Hooks | None = None,
+        structured_output: bool = False,
+        expand: set[str] | None = None,
+        extra_tools: list[Callable[..., Any]] | None = None,
     ) -> AgentResult:
         """Execute the agent on a task with shared context."""
         start = time.monotonic()
@@ -127,15 +130,30 @@ class Agent:
         tool_call_records: list[ToolCallRecord] = []
         call_index = 0
 
+        # Build run-local tool registry (agent tools + any extras)
+        run_tools: dict[str, Callable[..., Any]] = dict(self._tools)
+        run_schemas: list[dict[str, Any]] = list(self._tool_schemas)
+        if extra_tools:
+            for func in extra_tools:
+                run_tools[func.__name__] = func
+                run_schemas.append(_function_to_tool_schema(func))
+
         if hooks and hooks.is_active:
             await hooks.emit(
                 Event(EventType.AGENT_START, {"agent": self.name, "task": task})
             )
 
         system_content = self.instructions
-        context_str = context.format_for_prompt()
+        context_str = context.format_for_prompt(expand=expand)
         if context_str:
             system_content += "\n\n# Context from prior agents\n" + context_str
+        if structured_output:
+            system_content += (
+                "\n\n# Output format\n"
+                "Begin your response with a 2-3 sentence executive summary "
+                "wrapped in <summary>...</summary> tags, then provide your "
+                "full detailed response below the tags."
+            )
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_content},
@@ -146,8 +164,8 @@ class Agent:
             "model": self.model,
             "messages": messages,
         }
-        if self._tool_schemas:
-            kwargs["tools"] = self._tool_schemas
+        if run_schemas:
+            kwargs["tools"] = run_schemas
 
         try:
             while True:
@@ -233,7 +251,7 @@ class Agent:
                     fn_name = tool_call.function.name
                     fn_args = json.loads(tool_call.function.arguments)
 
-                    if fn_name not in self._tools:
+                    if fn_name not in run_tools:
                         raise AgentError(
                             self.name, f"Model called unknown tool: {fn_name}"
                         )
@@ -251,7 +269,7 @@ class Agent:
                         )
 
                     tool_start = time.monotonic()
-                    result = self._tools[fn_name](**fn_args)
+                    result = run_tools[fn_name](**fn_args)
                     if inspect.isawaitable(result):
                         result = await result
                     tool_duration = round(time.monotonic() - tool_start, 3)

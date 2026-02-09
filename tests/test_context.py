@@ -54,3 +54,76 @@ def test_overwrite():
     ctx.set("key", "first")
     ctx.set("key", "second")
     assert ctx.get("key") == "second"
+
+
+# --- Tiered context tests ---
+
+
+def test_set_with_summary():
+    ctx = SharedContext()
+    ctx.set("researcher", "Full detailed output here.", summary="Short summary.")
+    assert ctx.get("researcher") == "Full detailed output here."
+    assert ctx.get_summary("researcher") == "Short summary."
+
+
+def test_set_without_summary_uses_full():
+    ctx = SharedContext()
+    ctx.set("researcher", "Full output")
+    assert ctx.get_summary("researcher") == "Full output"
+
+
+def test_get_summary_missing_key():
+    ctx = SharedContext()
+    assert ctx.get_summary("nonexistent") is None
+
+
+def test_format_for_prompt_expand_specific_keys():
+    ctx = SharedContext()
+    ctx.set("a", "Full A", summary="Summary A")
+    ctx.set("b", "Full B", summary="Summary B")
+    ctx.set("c", "Full C", summary="Summary C")
+
+    result = ctx.format_for_prompt(expand={"b"})
+    assert "Summary A" in result
+    assert "Full A" not in result
+    assert "## a (summary)" in result
+    assert "Full B" in result
+    assert "Summary B" not in result
+    assert "## b\n" in result
+    assert "Summary C" in result
+    assert "Full C" not in result
+    assert "## c (summary)" in result
+
+
+def test_format_for_prompt_expand_none_shows_all_full():
+    ctx = SharedContext()
+    ctx.set("a", "Full A", summary="Summary A")
+    ctx.set("b", "Full B", summary="Summary B")
+
+    result = ctx.format_for_prompt(expand=None)
+    assert "Full A" in result
+    assert "Full B" in result
+    assert "Summary A" not in result
+    assert "Summary B" not in result
+
+
+def test_format_for_prompt_expand_empty_set_shows_all_summaries():
+    ctx = SharedContext()
+    ctx.set("a", "Full A", summary="Summary A")
+    ctx.set("b", "Full B", summary="Summary B")
+
+    result = ctx.format_for_prompt(expand=set())
+    assert "Summary A" in result
+    assert "Summary B" in result
+    assert "Full A" not in result
+    assert "Full B" not in result
+    assert "## a (summary)" in result
+    assert "## b (summary)" in result
+
+
+def test_format_for_prompt_expand_none_no_summary_labels():
+    ctx = SharedContext()
+    ctx.set("a", "Full A", summary="Summary A")
+
+    result = ctx.format_for_prompt(expand=None)
+    assert "(summary)" not in result
