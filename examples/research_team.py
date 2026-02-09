@@ -34,10 +34,7 @@ editor = Agent(
     model="anthropic/claude-opus-4-6",
 )
 
-swarm = Swarm(
-    agents=[researcher, analyst, writer, editor],
-    flow="researcher >> [analyst, writer] >> editor",
-)
+swarm = Swarm(flow=researcher >> (analyst | writer) >> editor)
 
 
 async def main() -> None:

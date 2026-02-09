@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-import pytest
-
-from swarmcore import Agent, Swarm, SwarmResult
-from swarmcore.exceptions import SwarmError
+from swarmcore import Agent, Swarm, SwarmResult, chain, parallel
 from swarmcore.models import AgentResult
 from tests.conftest import make_mock_response
 
@@ -16,13 +13,10 @@ async def test_sequential_flow(mock_llm: AsyncMock):
         make_mock_response(content="Writer output"),
     ]
 
-    swarm = Swarm(
-        agents=[
-            Agent(name="researcher", instructions="Research."),
-            Agent(name="writer", instructions="Write."),
-        ],
-        flow="researcher >> writer",
-    )
+    researcher = Agent(name="researcher", instructions="Research.")
+    writer = Agent(name="writer", instructions="Write.")
+
+    swarm = Swarm(flow=researcher >> writer)
 
     result = await swarm.run("Test task")
 
@@ -40,13 +34,10 @@ async def test_parallel_flow(mock_llm: AsyncMock):
         make_mock_response(content="Agent B output"),
     ]
 
-    swarm = Swarm(
-        agents=[
-            Agent(name="a", instructions="Do A."),
-            Agent(name="b", instructions="Do B."),
-        ],
-        flow="[a, b]",
-    )
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=chain(parallel(a, b)))
 
     result = await swarm.run("Test task")
 
@@ -63,15 +54,12 @@ async def test_mixed_flow(mock_llm: AsyncMock):
         make_mock_response(content="Writer output"),
     ]
 
-    swarm = Swarm(
-        agents=[
-            Agent(name="planner", instructions="Plan."),
-            Agent(name="researcher", instructions="Research."),
-            Agent(name="critic", instructions="Critique."),
-            Agent(name="writer", instructions="Write."),
-        ],
-        flow="planner >> [researcher, critic] >> writer",
-    )
+    planner = Agent(name="planner", instructions="Plan.")
+    researcher = Agent(name="researcher", instructions="Research.")
+    critic = Agent(name="critic", instructions="Critique.")
+    writer = Agent(name="writer", instructions="Write.")
+
+    swarm = Swarm(flow=chain(planner, parallel(researcher, critic), writer))
 
     result = await swarm.run("Test task")
 
@@ -88,13 +76,10 @@ async def test_context_passing(mock_llm: AsyncMock):
         make_mock_response(content="Summary based on research"),
     ]
 
-    swarm = Swarm(
-        agents=[
-            Agent(name="researcher", instructions="Research."),
-            Agent(name="writer", instructions="Write."),
-        ],
-        flow="researcher >> writer",
-    )
+    researcher = Agent(name="researcher", instructions="Research.")
+    writer = Agent(name="writer", instructions="Write.")
+
+    swarm = Swarm(flow=researcher >> writer)
 
     await swarm.run("Test task")
 
@@ -105,19 +90,10 @@ async def test_context_passing(mock_llm: AsyncMock):
     assert "Research notes here" in system_msg
 
 
-def test_invalid_agent_name_raises():
-    with pytest.raises(SwarmError, match="nonexistent"):
-        Swarm(
-            agents=[Agent(name="a", instructions="Do A.")],
-            flow="a >> nonexistent",
-        )
-
-
 async def test_result_structure(mock_llm: AsyncMock):
-    swarm = Swarm(
-        agents=[Agent(name="solo", instructions="Work alone.")],
-        flow="solo",
-    )
+    solo = Agent(name="solo", instructions="Work alone.")
+
+    swarm = Swarm(flow=chain(solo))
 
     result = await swarm.run("Do it")
 

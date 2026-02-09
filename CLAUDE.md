@@ -36,28 +36,36 @@ uv build
 ```
 src/swarmcore/
 ├── __init__.py      # Public API exports
-├── agent.py         # Agent class, tool schema conversion, LLM execution loop
+├── agent.py         # Agent class, tool schema conversion, LLM execution loop, >> and | operators
 ├── context.py       # SharedContext key-value store for inter-agent communication
 ├── exceptions.py    # SwarmError, AgentError
+├── flow.py          # Flow, chain(), parallel() — composable execution plans
 ├── models.py        # Pydantic data models (TokenUsage, AgentResult, SwarmResult)
-└── swarm.py         # Swarm orchestrator, flow parser
+└── swarm.py         # Swarm orchestrator, executes Flow steps
 ```
 
 ### Core abstractions
 
 - **Agent**: Wraps a single LLM call with instructions, model, and optional tools. Runs a tool-calling loop until the model returns a final text response. Stateless between runs.
-- **Swarm**: Orchestrates multiple agents via a flow string. Parses the flow, validates agent names, runs steps sequentially or in parallel with `asyncio.gather()`, and maintains a `SharedContext`.
+- **Flow**: Immutable execution plan holding `list[Agent | list[Agent]]`. Built via `chain()`/`parallel()` functions or `>>` (sequential) / `|` (parallel) operators on agents.
+- **Swarm**: Orchestrates agents via a `Flow` object. Runs steps sequentially or in parallel with `asyncio.gather()`, and maintains a `SharedContext`.
 - **SharedContext**: Simple `dict[str, str]` store. Each agent's output is stored under its name. Context is formatted as markdown sections and injected into subsequent agents' system prompts.
 
 ### Flow syntax
 
+Operator style (on Agent/Flow objects):
 - `a >> b >> c` — sequential
-- `[a, b]` — parallel
-- `a >> [b, c] >> d` — mixed
+- `a | b` — parallel
+- `a >> (b | c) >> d` — mixed
+
+Functional style:
+- `chain(a, b, c)` — sequential
+- `chain(parallel(a, b))` — parallel
+- `chain(a, parallel(b, c), d)` — mixed
 
 ### Execution flow
 
-`swarm.run(task)` → creates empty `SharedContext` → for each step: if sequential, awaits `agent.run(task, context)`; if parallel, uses `asyncio.gather()` → each agent injects context into system prompt, calls `litellm.acompletion()`, loops on tool calls → stores output in context → returns `SwarmResult(output, context, history)`.
+`Swarm(flow)` receives a `Flow` object → `swarm.run(task)` creates empty `SharedContext` → iterates `flow.steps`: if step is a single `Agent`, awaits `agent.run(task, context)`; if step is `list[Agent]`, uses `asyncio.gather()` → each agent injects context into system prompt, calls `litellm.acompletion()`, loops on tool calls → stores output in context → returns `SwarmResult(output, context, history)`.
 
 ### Tool system
 
@@ -68,7 +76,7 @@ Tools are plain Python functions. `agent.py:_function_to_tool_schema()` introspe
 - **Framework**: pytest + pytest-asyncio (auto mode)
 - **Mocking**: `litellm.acompletion` is patched via a `mock_llm` fixture in `tests/conftest.py`
 - **Pattern**: `make_mock_response()` factory creates mock LLM responses with configurable content and tool calls
-- Tests cover: agent execution, context injection, tool calling (sync/async), flow parsing, parallel/sequential swarm execution, error paths
+- Tests cover: agent execution, context injection, tool calling (sync/async), flow construction (chain/parallel/operators), parallel/sequential swarm execution, error paths
 
 ## Code Conventions
 

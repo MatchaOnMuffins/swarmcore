@@ -26,10 +26,7 @@ writer = Agent(
     model="anthropic/claude-opus-4-6",
 )
 
-swarm = Swarm(
-    agents=[researcher, writer],
-    flow="researcher >> writer",
-)
+swarm = Swarm(flow=researcher >> writer)
 
 result = asyncio.run(swarm.run("What are the key trends in AI agents in 2025?"))
 print(result.output)
@@ -37,18 +34,28 @@ print(result.output)
 
 The researcher runs first. Its output is stored in shared context. The writer runs next and sees the research notes in its prompt. `result.output` is the writer's final response.
 
-## Parallel Flows
+## Flows
 
-Fan out to multiple agents, then fan back in:
+Compose agents with `>>` (sequential) and `|` (parallel):
 
 ```python
-swarm = Swarm(
-    agents=[planner, researcher, critic, writer],
-    flow="planner >> [researcher, critic] >> writer",
-)
+# Sequential: planner runs, then writer
+swarm = Swarm(flow=planner >> writer)
+
+# Parallel: researcher and critic run concurrently
+swarm = Swarm(flow=(researcher | critic) >> writer)
+
+# Mixed: planner, then researcher+critic in parallel, then writer
+swarm = Swarm(flow=planner >> (researcher | critic) >> writer)
 ```
 
-`planner` runs first. Then `researcher` and `critic` run **in parallel** (concurrent LLM calls). Then `writer` runs with all three outputs in context.
+Or use the functional API:
+
+```python
+from swarmcore import chain, parallel
+
+swarm = Swarm(flow=chain(planner, parallel(researcher, critic), writer))
+```
 
 All parallel agents see the same context snapshot from before their step. They don't see each other's outputs during execution.
 
@@ -99,17 +106,30 @@ Set the appropriate API key for your provider (`OPENAI_API_KEY`, `ANTHROPIC_API_
 
 | Param | Type | Default | Description |
 |---|---|---|---|
-| `name` | `str` | required | Unique identifier used in flow strings and context keys |
+| `name` | `str` | required | Unique identifier used in context keys |
 | `instructions` | `str` | required | System prompt for this agent |
 | `model` | `str` | `"anthropic/claude-opus-4-6"` | LiteLLM model string |
 | `tools` | `list[Callable]` | `None` | Python functions for tool calling |
 
-### `Swarm(agents, flow)`
+Supports `>>` (sequential) and `|` (parallel) operators for composing flows.
+
+### `Swarm(flow)`
 
 | Param | Type | Description |
 |---|---|---|
-| `agents` | `list[Agent]` | All agents referenced in the flow |
-| `flow` | `str` | Execution flow: `"a >> b"` (sequential), `"a >> [b, c] >> d"` (parallel) |
+| `flow` | `Flow` | Execution plan built via operators or `chain()`/`parallel()` |
+
+### `chain(*agents_or_groups)` / `parallel(*agents)`
+
+```python
+from swarmcore import chain, parallel
+
+# Functional flow construction
+flow = chain(a, parallel(b, c), d)
+swarm = Swarm(flow=flow)
+```
+
+`parallel()` requires at least 2 agents.
 
 ### `SwarmResult`
 

@@ -105,7 +105,9 @@ async def test_agent_async_tool(mock_llm: AsyncMock):
         make_mock_response(content="Found the result."),
     ]
 
-    agent = Agent(name="lookup_agent", instructions="Look things up.", tools=[async_lookup])
+    agent = Agent(
+        name="lookup_agent", instructions="Look things up.", tools=[async_lookup]
+    )
     ctx = SharedContext()
 
     result = await agent.run("Look up test", ctx)

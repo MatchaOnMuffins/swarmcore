@@ -3,13 +3,16 @@ from __future__ import annotations
 import inspect
 import json
 import time
-from typing import Any, Callable, get_type_hints
+from typing import TYPE_CHECKING, Any, Callable, get_type_hints
 
 import litellm
 
 from swarmcore.context import SharedContext
 from swarmcore.exceptions import AgentError
 from swarmcore.models import AgentResult, TokenUsage
+
+if TYPE_CHECKING:
+    from swarmcore.flow import Flow
 
 _PYTHON_TO_JSON_SCHEMA: dict[type, str] = {
     str: "string",
@@ -41,9 +44,9 @@ def _function_to_tool_schema(func: Callable[..., Any]) -> dict[str, Any]:
             if stripped.startswith(f"{param_name}:") or stripped.startswith(
                 f"{param_name} :"
             ):
-                properties[param_name]["description"] = (
-                    stripped.split(":", 1)[1].strip()
-                )
+                properties[param_name]["description"] = stripped.split(":", 1)[
+                    1
+                ].strip()
                 break
 
         if param.default is inspect.Parameter.empty:
@@ -82,6 +85,31 @@ class Agent:
             for func in tools:
                 self._tools[func.__name__] = func
                 self._tool_schemas.append(_function_to_tool_schema(func))
+
+    def __rshift__(self, other: Agent | Flow) -> Flow:
+        from swarmcore.flow import Flow as _Flow
+
+        if isinstance(other, Agent):
+            return _Flow([self, other])
+        if isinstance(other, _Flow):
+            steps: list[Agent | list[Agent]] = [self, *other._steps]
+            return _Flow(steps)
+        return NotImplemented
+
+    def __or__(self, other: Agent | Flow) -> Flow:
+        from swarmcore.flow import Flow as _Flow
+
+        if isinstance(other, Agent):
+            return _Flow([[self, other]])
+        if isinstance(other, _Flow):
+            agents: list[Agent] = []
+            for step in other._steps:
+                if isinstance(step, list):
+                    agents.extend(step)
+                else:
+                    agents.append(step)
+            return _Flow([[self] + agents])
+        return NotImplemented
 
     async def run(self, task: str, context: SharedContext) -> AgentResult:
         """Execute the agent on a task with shared context."""
