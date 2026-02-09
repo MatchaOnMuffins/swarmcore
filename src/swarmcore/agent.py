@@ -9,7 +9,8 @@ import litellm
 
 from swarmcore.context import SharedContext
 from swarmcore.exceptions import AgentError
-from swarmcore.models import AgentResult, TokenUsage
+from swarmcore.hooks import Event, EventType, Hooks
+from swarmcore.models import AgentResult, LLMCallRecord, TokenUsage, ToolCallRecord
 
 if TYPE_CHECKING:
     from swarmcore.flow import Flow
@@ -111,10 +112,24 @@ class Agent:
             return _Flow([[self] + agents])
         return NotImplemented
 
-    async def run(self, task: str, context: SharedContext) -> AgentResult:
+    async def run(
+        self,
+        task: str,
+        context: SharedContext,
+        *,
+        hooks: Hooks | None = None,
+    ) -> AgentResult:
         """Execute the agent on a task with shared context."""
         start = time.monotonic()
         total_usage = TokenUsage()
+        llm_call_records: list[LLMCallRecord] = []
+        tool_call_records: list[ToolCallRecord] = []
+        call_index = 0
+
+        if hooks and hooks.is_active:
+            await hooks.emit(
+                Event(EventType.AGENT_START, {"agent": self.name, "task": task})
+            )
 
         system_content = self.instructions
         context_str = context.format_for_prompt()
@@ -135,16 +150,61 @@ class Agent:
 
         try:
             while True:
+                if hooks and hooks.is_active:
+                    await hooks.emit(
+                        Event(
+                            EventType.LLM_CALL_START,
+                            {"agent": self.name, "call_index": call_index},
+                        )
+                    )
+
+                llm_start = time.monotonic()
                 response = await litellm.acompletion(**kwargs)
+                llm_duration = round(time.monotonic() - llm_start, 3)
 
                 usage = response.usage
+                call_usage = TokenUsage()
                 if usage:
-                    total_usage.prompt_tokens += usage.prompt_tokens or 0
-                    total_usage.completion_tokens += usage.completion_tokens or 0
-                    total_usage.total_tokens += usage.total_tokens or 0
+                    call_usage.prompt_tokens = usage.prompt_tokens or 0
+                    call_usage.completion_tokens = usage.completion_tokens or 0
+                    call_usage.total_tokens = usage.total_tokens or 0
+                    total_usage.prompt_tokens += call_usage.prompt_tokens
+                    total_usage.completion_tokens += call_usage.completion_tokens
+                    total_usage.total_tokens += call_usage.total_tokens
 
                 choice = response.choices[0]
                 message = choice.message
+                finish_reason = getattr(choice, "finish_reason", None) or ""
+
+                tool_names_requested: list[str] = []
+                if message.tool_calls:
+                    tool_names_requested = [
+                        str(tc.function.name) for tc in message.tool_calls
+                    ]
+
+                llm_record = LLMCallRecord(
+                    call_index=call_index,
+                    token_usage=call_usage,
+                    duration_seconds=llm_duration,
+                    tool_calls_requested=tool_names_requested,
+                    finish_reason=finish_reason,
+                )
+                llm_call_records.append(llm_record)
+
+                if hooks and hooks.is_active:
+                    await hooks.emit(
+                        Event(
+                            EventType.LLM_CALL_END,
+                            {
+                                "agent": self.name,
+                                "call_index": call_index,
+                                "finish_reason": finish_reason,
+                                "duration_seconds": llm_duration,
+                            },
+                        )
+                    )
+
+                call_index += 1
 
                 if not message.tool_calls:
                     output = message.content or ""
@@ -177,32 +237,98 @@ class Agent:
                             self.name, f"Model called unknown tool: {fn_name}"
                         )
 
+                    if hooks and hooks.is_active:
+                        await hooks.emit(
+                            Event(
+                                EventType.TOOL_CALL_START,
+                                {
+                                    "agent": self.name,
+                                    "tool": fn_name,
+                                    "arguments": fn_args,
+                                },
+                            )
+                        )
+
+                    tool_start = time.monotonic()
                     result = self._tools[fn_name](**fn_args)
                     if inspect.isawaitable(result):
                         result = await result
+                    tool_duration = round(time.monotonic() - tool_start, 3)
+
+                    result_str = str(result)
+                    tool_record = ToolCallRecord(
+                        tool_name=fn_name,
+                        arguments=fn_args,
+                        result=result_str[:1000],
+                        duration_seconds=tool_duration,
+                    )
+                    tool_call_records.append(tool_record)
+
+                    if hooks and hooks.is_active:
+                        await hooks.emit(
+                            Event(
+                                EventType.TOOL_CALL_END,
+                                {
+                                    "agent": self.name,
+                                    "tool": fn_name,
+                                    "duration_seconds": tool_duration,
+                                },
+                            )
+                        )
 
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
-                            "content": str(result),
+                            "content": result_str,
                         }
                     )
 
                 kwargs["messages"] = messages
 
         except AgentError:
+            if hooks and hooks.is_active:
+                await hooks.emit(
+                    Event(
+                        EventType.AGENT_ERROR,
+                        {"agent": self.name, "error": str(AgentError)},
+                    )
+                )
             raise
         except Exception as e:
+            if hooks and hooks.is_active:
+                await hooks.emit(
+                    Event(
+                        EventType.AGENT_ERROR,
+                        {"agent": self.name, "error": str(e)},
+                    )
+                )
             raise AgentError(self.name, str(e)) from e
 
         duration = time.monotonic() - start
 
-        return AgentResult(
+        agent_result = AgentResult(
             agent_name=self.name,
             input_task=task,
             output=output,
             model=self.model,
             duration_seconds=round(duration, 3),
             token_usage=total_usage,
+            llm_calls=llm_call_records,
+            tool_calls=tool_call_records,
+            llm_call_count=len(llm_call_records),
+            tool_call_count=len(tool_call_records),
         )
+
+        if hooks and hooks.is_active:
+            await hooks.emit(
+                Event(
+                    EventType.AGENT_END,
+                    {
+                        "agent": self.name,
+                        "duration_seconds": agent_result.duration_seconds,
+                    },
+                )
+            )
+
+        return agent_result

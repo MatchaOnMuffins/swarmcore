@@ -25,6 +25,16 @@ async def test_agent_basic_run(mock_llm: AsyncMock):
     assert result.token_usage.completion_tokens == 20
     assert result.token_usage.total_tokens == 30
 
+    # New observability fields
+    assert result.llm_call_count == 1
+    assert result.tool_call_count == 0
+    assert len(result.llm_calls) == 1
+    assert len(result.tool_calls) == 0
+    assert result.llm_calls[0].call_index == 0
+    assert result.llm_calls[0].finish_reason == "stop"
+    assert result.llm_calls[0].token_usage.prompt_tokens == 10
+    assert result.llm_calls[0].tool_calls_requested == []
+
     mock_llm.assert_called_once()
     call_kwargs = mock_llm.call_args
     messages = call_kwargs.kwargs["messages"]
@@ -89,6 +99,24 @@ async def test_agent_tool_calling(mock_llm: AsyncMock):
     assert result.token_usage.completion_tokens == 40
     assert result.token_usage.total_tokens == 60
 
+    # New observability fields
+    assert result.llm_call_count == 2
+    assert result.tool_call_count == 1
+    assert len(result.llm_calls) == 2
+    assert len(result.tool_calls) == 1
+
+    # First LLM call requested a tool
+    assert result.llm_calls[0].tool_calls_requested == ["get_weather"]
+    # Second LLM call had no tool calls
+    assert result.llm_calls[1].tool_calls_requested == []
+
+    # Tool call record
+    tc = result.tool_calls[0]
+    assert tc.tool_name == "get_weather"
+    assert tc.arguments == {"location": "Paris"}
+    assert tc.result == "Sunny in Paris"
+    assert tc.duration_seconds >= 0
+
 
 async def test_agent_async_tool(mock_llm: AsyncMock):
     async def async_lookup(query: str) -> str:
@@ -113,6 +141,8 @@ async def test_agent_async_tool(mock_llm: AsyncMock):
     result = await agent.run("Look up test", ctx)
 
     assert result.output == "Found the result."
+    assert result.tool_call_count == 1
+    assert result.tool_calls[0].tool_name == "async_lookup"
 
 
 async def test_agent_unknown_tool_raises(mock_llm: AsyncMock):

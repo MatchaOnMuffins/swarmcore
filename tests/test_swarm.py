@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 from swarmcore import Agent, Swarm, SwarmResult, chain, parallel
+from swarmcore.hooks import EventType, Hooks
 from swarmcore.models import AgentResult
 from tests.conftest import make_mock_response
 
@@ -102,3 +103,51 @@ async def test_result_structure(mock_llm: AsyncMock):
     assert isinstance(result.context, dict)
     assert isinstance(result.history, list)
     assert all(isinstance(r, AgentResult) for r in result.history)
+
+
+async def test_swarm_duration_and_total_usage(mock_llm: AsyncMock):
+    mock_llm.side_effect = [
+        make_mock_response(content="A output", prompt_tokens=5, completion_tokens=10),
+        make_mock_response(content="B output", prompt_tokens=15, completion_tokens=25),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b)
+    result = await swarm.run("Task")
+
+    assert result.duration_seconds >= 0
+    assert result.total_token_usage.prompt_tokens == 20
+    assert result.total_token_usage.completion_tokens == 35
+    assert result.total_token_usage.total_tokens == 55
+
+
+async def test_swarm_with_hooks(mock_llm: AsyncMock):
+    mock_llm.side_effect = [
+        make_mock_response(content="Output A"),
+        make_mock_response(content="Output B"),
+    ]
+
+    collected: list[EventType] = []
+
+    def handler(event):
+        collected.append(event.type)
+
+    hooks = Hooks()
+    hooks.on_all(handler)
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b, hooks=hooks)
+    await swarm.run("Task")
+
+    assert EventType.SWARM_START in collected
+    assert EventType.SWARM_END in collected
+    assert EventType.STEP_START in collected
+    assert EventType.STEP_END in collected
+    assert EventType.AGENT_START in collected
+    assert EventType.AGENT_END in collected
+    assert EventType.LLM_CALL_START in collected
+    assert EventType.LLM_CALL_END in collected

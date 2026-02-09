@@ -24,6 +24,7 @@ def make_mock_response(
 
     choice = MagicMock()
     choice.message = message
+    choice.finish_reason = "stop"
 
     response = MagicMock()
     response.choices = [choice]

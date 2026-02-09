@@ -20,6 +20,10 @@ dev = [
     "ruff",
     "pyright",
 ]
+otel = [
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+]
 
 [dependency-groups]
 dev = [
