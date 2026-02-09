@@ -127,3 +127,73 @@ def test_format_for_prompt_expand_none_no_summary_labels():
 
     result = ctx.format_for_prompt(expand=None)
     assert "(summary)" not in result
+
+
+# --- Query method tests ---
+
+
+def test_keys_empty():
+    ctx = SharedContext()
+    assert ctx.keys() == []
+
+
+def test_keys_insertion_order():
+    ctx = SharedContext()
+    ctx.set("b", "B output")
+    ctx.set("a", "A output")
+    ctx.set("c", "C output")
+    assert ctx.keys() == ["b", "a", "c"]
+
+
+def test_search_matches():
+    ctx = SharedContext()
+    ctx.set("researcher", "Found AI trends.\nGrowth is exponential.")
+    ctx.set("critic", "AI trends are overhyped.\nNeed more data.")
+    results = ctx.search("AI trends")
+    assert "researcher" in results
+    assert "critic" in results
+    assert results["researcher"] == ["Found AI trends."]
+    assert results["critic"] == ["AI trends are overhyped."]
+
+
+def test_search_no_matches():
+    ctx = SharedContext()
+    ctx.set("researcher", "Some output")
+    assert ctx.search("nonexistent") == {}
+
+
+def test_search_regex():
+    ctx = SharedContext()
+    ctx.set("agent", "line 1\nfoo123bar\nline 3")
+    results = ctx.search(r"foo\d+bar")
+    assert results == {"agent": ["foo123bar"]}
+
+
+def test_search_invalid_regex_fallback():
+    ctx = SharedContext()
+    ctx.set("agent", "value is [bracket]")
+    results = ctx.search("[bracket]")
+    assert results == {"agent": ["value is [bracket]"]}
+
+
+def test_entries_empty():
+    ctx = SharedContext()
+    assert ctx.entries() == []
+
+
+def test_entries_returns_tuples():
+    ctx = SharedContext()
+    ctx.set("a", "Full A output", summary="A summary")
+    ctx.set("b", "Full B")
+    entries = ctx.entries()
+    assert len(entries) == 2
+    name, summary, full, count = entries[0]
+    assert name == "a"
+    assert summary == "A summary"
+    assert full == "Full A output"
+    assert count == len("Full A output")
+    name2, summary2, full2, count2 = entries[1]
+    assert name2 == "b"
+    assert summary2 == "Full B"
+    assert full2 == "Full B"
+    assert count2 == len("Full B")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 
 class SharedContext:
     """Shared key-value store passed between agents in a swarm run."""
@@ -37,6 +39,34 @@ class SharedContext:
                 content = self._summaries[name]
                 sections.append(f"## {name} (summary)\n{content}")
         return "\n\n".join(sections)
+
+    def keys(self) -> list[str]:
+        """Return all entry keys in insertion order."""
+        return list(self._full.keys())
+
+    def search(self, pattern: str) -> dict[str, list[str]]:
+        """Search across all full entries, returning matching lines by agent name.
+
+        Falls back to substring matching if *pattern* is not a valid regex.
+        """
+        try:
+            regex = re.compile(pattern)
+        except re.error:
+            regex = re.compile(re.escape(pattern))
+
+        results: dict[str, list[str]] = {}
+        for key, value in self._full.items():
+            matches = [line for line in value.splitlines() if regex.search(line)]
+            if matches:
+                results[key] = matches
+        return results
+
+    def entries(self) -> list[tuple[str, str, str, int]]:
+        """Return ``(key, summary, full, char_count)`` tuples for all entries."""
+        return [
+            (key, self._summaries[key], self._full[key], len(self._full[key]))
+            for key in self._full
+        ]
 
     def to_dict(self) -> dict[str, str]:
         return dict(self._full)

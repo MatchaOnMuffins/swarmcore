@@ -122,6 +122,7 @@ class Agent:
         structured_output: bool = False,
         expand: set[str] | None = None,
         extra_tools: list[Callable[..., Any]] | None = None,
+        context_hint: str | None = None,
     ) -> AgentResult:
         """Execute the agent on a task with shared context."""
         start = time.monotonic()
@@ -144,9 +145,12 @@ class Agent:
             )
 
         system_content = self.instructions
-        context_str = context.format_for_prompt(expand=expand)
-        if context_str:
-            system_content += "\n\n# Context from prior agents\n" + context_str
+        if context_hint is not None:
+            system_content += "\n\n# Available context\n" + context_hint
+        else:
+            context_str = context.format_for_prompt(expand=expand)
+            if context_str:
+                system_content += "\n\n# Context from prior agents\n" + context_str
         if structured_output:
             system_content += (
                 "\n\n# Output format\n"

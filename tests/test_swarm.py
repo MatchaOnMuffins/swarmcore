@@ -19,7 +19,7 @@ async def test_sequential_flow(mock_llm: AsyncMock):
     researcher = Agent(name="researcher", instructions="Research.")
     writer = Agent(name="writer", instructions="Write.")
 
-    swarm = Swarm(flow=researcher >> writer)
+    swarm = Swarm(flow=researcher >> writer, context_mode="push")
 
     result = await swarm.run("Test task")
 
@@ -40,7 +40,7 @@ async def test_parallel_flow(mock_llm: AsyncMock):
     a = Agent(name="a", instructions="Do A.")
     b = Agent(name="b", instructions="Do B.")
 
-    swarm = Swarm(flow=chain(parallel(a, b)))
+    swarm = Swarm(flow=chain(parallel(a, b)), context_mode="push")
 
     result = await swarm.run("Test task")
 
@@ -62,7 +62,10 @@ async def test_mixed_flow(mock_llm: AsyncMock):
     critic = Agent(name="critic", instructions="Critique.")
     writer = Agent(name="writer", instructions="Write.")
 
-    swarm = Swarm(flow=chain(planner, parallel(researcher, critic), writer))
+    swarm = Swarm(
+        flow=chain(planner, parallel(researcher, critic), writer),
+        context_mode="push",
+    )
 
     result = await swarm.run("Test task")
 
@@ -82,7 +85,7 @@ async def test_context_passing(mock_llm: AsyncMock):
     researcher = Agent(name="researcher", instructions="Research.")
     writer = Agent(name="writer", instructions="Write.")
 
-    swarm = Swarm(flow=researcher >> writer)
+    swarm = Swarm(flow=researcher >> writer, context_mode="push")
 
     await swarm.run("Test task")
 
@@ -96,7 +99,7 @@ async def test_context_passing(mock_llm: AsyncMock):
 async def test_result_structure(mock_llm: AsyncMock):
     solo = Agent(name="solo", instructions="Work alone.")
 
-    swarm = Swarm(flow=chain(solo))
+    swarm = Swarm(flow=chain(solo), context_mode="push")
 
     result = await swarm.run("Do it")
 
@@ -116,7 +119,7 @@ async def test_swarm_duration_and_total_usage(mock_llm: AsyncMock):
     a = Agent(name="a", instructions="Do A.")
     b = Agent(name="b", instructions="Do B.")
 
-    swarm = Swarm(flow=a >> b)
+    swarm = Swarm(flow=a >> b, context_mode="push")
     result = await swarm.run("Task")
 
     assert result.duration_seconds >= 0
@@ -142,7 +145,7 @@ async def test_swarm_with_hooks(mock_llm: AsyncMock):
     a = Agent(name="a", instructions="Do A.")
     b = Agent(name="b", instructions="Do B.")
 
-    swarm = Swarm(flow=a >> b, hooks=hooks)
+    swarm = Swarm(flow=a >> b, hooks=hooks, context_mode="push")
     await swarm.run("Task")
 
     assert EventType.SWARM_START in collected
@@ -155,18 +158,14 @@ async def test_swarm_with_hooks(mock_llm: AsyncMock):
     assert EventType.LLM_CALL_END in collected
 
 
-# --- Tiered context tests ---
+# --- Tiered context tests (push mode) ---
 
 
 async def test_tiered_context_sequential_chain(mock_llm: AsyncMock):
     """A >> B >> C: C sees A's summary + B's full output."""
     mock_llm.side_effect = [
-        make_mock_response(
-            content="<summary>A summary.</summary>\nA detailed output."
-        ),
-        make_mock_response(
-            content="<summary>B summary.</summary>\nB detailed output."
-        ),
+        make_mock_response(content="<summary>A summary.</summary>\nA detailed output."),
+        make_mock_response(content="<summary>B summary.</summary>\nB detailed output."),
         make_mock_response(content="C final output."),
     ]
 
@@ -174,7 +173,7 @@ async def test_tiered_context_sequential_chain(mock_llm: AsyncMock):
     b = Agent(name="b", instructions="Do B.")
     c = Agent(name="c", instructions="Do C.")
 
-    swarm = Swarm(flow=a >> b >> c)
+    swarm = Swarm(flow=a >> b >> c, context_mode="push")
     result = await swarm.run("Task")
 
     # A's output should have summary stripped
@@ -200,15 +199,9 @@ async def test_tiered_context_sequential_chain(mock_llm: AsyncMock):
 async def test_tiered_context_parallel_flow(mock_llm: AsyncMock):
     """A >> (B | C) >> D: D sees A's summary + B's full + C's full."""
     mock_llm.side_effect = [
-        make_mock_response(
-            content="<summary>A sum.</summary>\nA detail."
-        ),
-        make_mock_response(
-            content="<summary>B sum.</summary>\nB detail."
-        ),
-        make_mock_response(
-            content="<summary>C sum.</summary>\nC detail."
-        ),
+        make_mock_response(content="<summary>A sum.</summary>\nA detail."),
+        make_mock_response(content="<summary>B sum.</summary>\nB detail."),
+        make_mock_response(content="<summary>C sum.</summary>\nC detail."),
         make_mock_response(content="D output."),
     ]
 
@@ -217,7 +210,7 @@ async def test_tiered_context_parallel_flow(mock_llm: AsyncMock):
     c = Agent(name="c", instructions="Do C.")
     d = Agent(name="d", instructions="Do D.")
 
-    swarm = Swarm(flow=chain(a, parallel(b, c), d))
+    swarm = Swarm(flow=chain(a, parallel(b, c), d), context_mode="push")
     result = await swarm.run("Task")
 
     # D's system prompt should have A's summary, B's and C's full output
@@ -241,7 +234,7 @@ async def test_graceful_degradation_no_tags(mock_llm: AsyncMock):
     a = Agent(name="a", instructions="Do A.")
     b = Agent(name="b", instructions="Do B.")
 
-    swarm = Swarm(flow=a >> b)
+    swarm = Swarm(flow=a >> b, context_mode="push")
     result = await swarm.run("Task")
 
     assert result.history[0].output == "Plain A output"
@@ -252,13 +245,11 @@ async def test_graceful_degradation_no_tags(mock_llm: AsyncMock):
 async def test_swarm_result_output_is_clean(mock_llm: AsyncMock):
     """SwarmResult.output should not contain <summary> tags."""
     mock_llm.side_effect = [
-        make_mock_response(
-            content="<summary>Final summary.</summary>\nFinal detail."
-        ),
+        make_mock_response(content="<summary>Final summary.</summary>\nFinal detail."),
     ]
 
     solo = Agent(name="solo", instructions="Work.")
-    swarm = Swarm(flow=chain(solo))
+    swarm = Swarm(flow=chain(solo), context_mode="push")
     result = await swarm.run("Task")
 
     assert "<summary>" not in result.output
@@ -287,7 +278,7 @@ async def test_expand_tool_injected_when_summaries_exist(mock_llm: AsyncMock):
     b = Agent(name="b", instructions="Do B.")
     c = Agent(name="c", instructions="Do C.")
 
-    swarm = Swarm(flow=a >> b >> c)
+    swarm = Swarm(flow=a >> b >> c, context_mode="push")
     result = await swarm.run("Task")
 
     assert result.output == "C output using A's full data."
@@ -306,12 +297,10 @@ async def test_expand_tool_not_injected_on_first_step(mock_llm: AsyncMock):
     tool_call.function.name = "expand_context"
     tool_call.function.arguments = '{"agent_name": "nobody"}'
 
-    mock_llm.return_value = make_mock_response(
-        content=None, tool_calls=[tool_call]
-    )
+    mock_llm.return_value = make_mock_response(content=None, tool_calls=[tool_call])
 
     a = Agent(name="a", instructions="Do A.")
-    swarm = Swarm(flow=chain(a))
+    swarm = Swarm(flow=chain(a), context_mode="push")
 
     with pytest.raises(Exception, match="unknown tool"):
         await swarm.run("Task")
@@ -327,11 +316,202 @@ async def test_expand_tool_not_injected_when_all_expanded(mock_llm: AsyncMock):
     a = Agent(name="a", instructions="Do A.")
     b = Agent(name="b", instructions="Do B.")
 
-    swarm = Swarm(flow=a >> b)
+    swarm = Swarm(flow=a >> b, context_mode="push")
     await swarm.run("Task")
 
     # B's call should NOT have expand_context in its tools
     b_call = mock_llm.call_args_list[1]
     tools = b_call.kwargs.get("tools", [])
     tool_names = [t["function"]["name"] for t in tools]
+    assert "expand_context" not in tool_names
+
+
+# --- Pull-mode tests ---
+
+
+async def test_pull_mode_injects_context_tools(mock_llm: AsyncMock):
+    """In pull mode, second agent gets context tools instead of expand_context."""
+    mock_llm.side_effect = [
+        make_mock_response(content="A output."),
+        make_mock_response(content="B output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b, context_mode="pull")
+    await swarm.run("Task")
+
+    # B's call should have pull-mode context tools
+    b_call = mock_llm.call_args_list[1]
+    tools = b_call.kwargs.get("tools", [])
+    tool_names = {t["function"]["name"] for t in tools}
+    assert "list_context" in tool_names
+    assert "get_context" in tool_names
+    assert "search_context" in tool_names
+    assert "expand_context" not in tool_names
+
+
+async def test_pull_mode_no_full_context_in_system_prompt(mock_llm: AsyncMock):
+    """Pull mode should NOT inject full detail into system prompt — only summary."""
+    mock_llm.side_effect = [
+        make_mock_response(
+            content="<summary>A short summary.</summary>\nDetailed research output with many words."
+        ),
+        make_mock_response(content="B output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b, context_mode="pull")
+    await swarm.run("Task")
+
+    b_call = mock_llm.call_args_list[1]
+    b_system = b_call.kwargs["messages"][0]["content"]
+    # Should NOT contain the full detail text
+    assert "Detailed research output with many words." not in b_system
+    # Should contain the summary
+    assert "A short summary." in b_system
+    # Should contain the agent name as a hint
+    assert "a" in b_system
+    # Should contain instructions about context tools
+    assert "list_context" in b_system or "get_context" in b_system
+
+
+async def test_pull_mode_includes_lightweight_hint(mock_llm: AsyncMock):
+    """Pull mode hint includes agent names and summaries."""
+    mock_llm.side_effect = [
+        make_mock_response(
+            content="<summary>Research summary.</summary>\nFull research."
+        ),
+        make_mock_response(content="B output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b, context_mode="pull")
+    await swarm.run("Task")
+
+    b_call = mock_llm.call_args_list[1]
+    b_system = b_call.kwargs["messages"][0]["content"]
+    assert "Available context" in b_system
+    assert "a" in b_system
+    assert "Research summary." in b_system
+
+
+async def test_pull_mode_first_agent_no_context_tools(mock_llm: AsyncMock):
+    """First agent in pull mode should get no context tools."""
+    mock_llm.side_effect = [
+        make_mock_response(content="A output."),
+        make_mock_response(content="B output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b, context_mode="pull")
+    await swarm.run("Task")
+
+    # First agent's call should NOT have context tools
+    a_call = mock_llm.call_args_list[0]
+    tools = a_call.kwargs.get("tools", [])
+    if tools:
+        tool_names = {t["function"]["name"] for t in tools}
+        assert "list_context" not in tool_names
+        assert "get_context" not in tool_names
+        assert "search_context" not in tool_names
+
+
+async def test_pull_mode_agent_calls_get_context(mock_llm: AsyncMock):
+    """Agent in pull mode can call get_context to retrieve prior output."""
+    tool_call = MagicMock()
+    tool_call.id = "call_get"
+    tool_call.function.name = "get_context"
+    tool_call.function.arguments = '{"agent_name": "a"}'
+
+    mock_llm.side_effect = [
+        make_mock_response(content="A detailed output."),
+        # B first calls get_context, then produces final output
+        make_mock_response(content=None, tool_calls=[tool_call]),
+        make_mock_response(content="B output using A's data."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b, context_mode="pull")
+    result = await swarm.run("Task")
+
+    assert result.output == "B output using A's data."
+
+    # B should have recorded a tool call for get_context
+    b_result = result.history[1]
+    assert b_result.tool_call_count == 1
+    assert b_result.tool_calls[0].tool_name == "get_context"
+    assert "A detailed output." in b_result.tool_calls[0].result
+
+
+async def test_pull_mode_summary_parsing_works(mock_llm: AsyncMock):
+    """Summary parsing should still work in pull mode."""
+    mock_llm.side_effect = [
+        make_mock_response(content="<summary>A summary.</summary>\nA detailed output."),
+        make_mock_response(content="B output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b, context_mode="pull")
+    result = await swarm.run("Task")
+
+    assert result.history[0].output == "A detailed output."
+    assert result.history[0].summary == "A summary."
+
+
+async def test_pull_mode_parallel_step(mock_llm: AsyncMock):
+    """Pull mode works with parallel steps."""
+    mock_llm.side_effect = [
+        make_mock_response(content="A output."),
+        make_mock_response(content="B output."),
+        make_mock_response(content="C output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+
+    swarm = Swarm(flow=chain(a, parallel(b, c)), context_mode="pull")
+    result = await swarm.run("Task")
+
+    assert result.context["a"] == "A output."
+    assert result.context["b"] == "B output."
+    assert result.context["c"] == "C output."
+
+    # B and C should have context tools
+    for call in mock_llm.call_args_list[1:]:
+        tools = call.kwargs.get("tools", [])
+        tool_names = {t["function"]["name"] for t in tools}
+        assert "get_context" in tool_names
+
+
+async def test_pull_mode_default(mock_llm: AsyncMock):
+    """Default context_mode should be pull."""
+    mock_llm.side_effect = [
+        make_mock_response(content="A output."),
+        make_mock_response(content="B output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b)
+    await swarm.run("Task")
+
+    # Should behave as pull mode: second agent gets context tools
+    b_call = mock_llm.call_args_list[1]
+    tools = b_call.kwargs.get("tools", [])
+    tool_names = {t["function"]["name"] for t in tools}
+    assert "get_context" in tool_names
     assert "expand_context" not in tool_names

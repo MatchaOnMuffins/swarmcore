@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Callable
+from typing import Callable, Literal
 
 from swarmcore.context import SharedContext
+from swarmcore.context_tools import make_context_tools
 from swarmcore.flow import Flow
 from swarmcore.hooks import Event, EventType, Hooks
 from swarmcore.models import AgentResult, SwarmResult, TokenUsage
@@ -48,10 +49,16 @@ def _make_expand_tool(context: SharedContext) -> Callable[[str], str]:
 
 
 class Swarm:
-    def __init__(self, flow: Flow, hooks: Hooks | None = None) -> None:
+    def __init__(
+        self,
+        flow: Flow,
+        hooks: Hooks | None = None,
+        context_mode: Literal["push", "pull"] = "pull",
+    ) -> None:
         self._steps = flow.steps
         self._agents = {a.name: a for a in flow.agents}
         self._hooks = hooks
+        self._context_mode = context_mode
 
     async def run(self, task: str) -> SwarmResult:
         """Execute the swarm workflow on the given task."""
@@ -88,16 +95,97 @@ class Swarm:
                     )
                 )
 
-            expand = prev_step_names or None
+            if self._context_mode == "pull":
+                # Pull mode: lightweight hint + context tools
+                has_context = bool(context.keys())
+                if has_context:
+                    pull_tools = make_context_tools(context)
+                    hint_lines = [
+                        "Prior agent outputs are available. Use the "
+                        "`list_context`, `get_context`, and `search_context` "
+                        "tools to retrieve them as needed.",
+                        "",
+                    ]
+                    for name, summary, _full, _count in context.entries():
+                        hint_lines.append(f"- **{name}**: {summary}")
+                    context_hint: str | None = "\n".join(hint_lines)
+                    extra_tools = pull_tools
+                else:
+                    context_hint = None
+                    extra_tools = None
 
-            # Offer the expand tool when there are summarized entries
-            context_keys = set(context.to_dict().keys())
-            summarized = context_keys - (expand or set())
-            extra_tools = [expand_tool] if summarized else None
+                if isinstance(step, list):
+                    coros = [
+                        agent.run(
+                            task,
+                            context,
+                            hooks=hooks,
+                            structured_output=True,
+                            extra_tools=extra_tools,
+                            context_hint=context_hint,
+                        )
+                        for agent in step
+                    ]
+                    results = await asyncio.gather(*coros)
 
-            if isinstance(step, list):
-                coros = [
-                    agent.run(
+                    current_step_names: set[str] = set()
+                    for result in results:
+                        summary, detail = _parse_structured_output(result.output)
+                        result.output = detail
+                        result.summary = summary
+                        context.set(result.agent_name, detail, summary=summary)
+                        history.append(result)
+                        current_step_names.add(result.agent_name)
+                    prev_step_names = current_step_names
+                else:
+                    result = await step.run(
+                        task,
+                        context,
+                        hooks=hooks,
+                        structured_output=True,
+                        extra_tools=extra_tools,
+                        context_hint=context_hint,
+                    )
+                    summary, detail = _parse_structured_output(result.output)
+                    result.output = detail
+                    result.summary = summary
+                    context.set(result.agent_name, detail, summary=summary)
+                    history.append(result)
+                    prev_step_names = {result.agent_name}
+            else:
+                # Push mode: existing tiered expand logic
+                expand = prev_step_names or None
+
+                # Offer the expand tool when there are summarized entries
+                context_keys = set(context.to_dict().keys())
+                summarized = context_keys - (expand or set())
+                extra_tools = [expand_tool] if summarized else None
+
+                if isinstance(step, list):
+                    coros = [
+                        agent.run(
+                            task,
+                            context,
+                            hooks=hooks,
+                            structured_output=True,
+                            expand=expand,
+                            extra_tools=extra_tools,
+                        )
+                        for agent in step
+                    ]
+                    results = await asyncio.gather(*coros)
+
+                    current_step_names_push: set[str] = set()
+                    for result in results:
+                        summary, detail = _parse_structured_output(result.output)
+                        result.output = detail
+                        result.summary = summary
+                        context.set(result.agent_name, detail, summary=summary)
+                        history.append(result)
+                        current_step_names_push.add(result.agent_name)
+                    prev_step_names = current_step_names_push
+                else:
+                    result = await step.run(
                         task,
                         context,
                         hooks=hooks,
@@ -105,34 +193,12 @@ class Swarm:
                         expand=expand,
                         extra_tools=extra_tools,
                     )
-                    for agent in step
-                ]
-                results = await asyncio.gather(*coros)
-
-                current_step_names: set[str] = set()
-                for result in results:
                     summary, detail = _parse_structured_output(result.output)
                     result.output = detail
                     result.summary = summary
                     context.set(result.agent_name, detail, summary=summary)
                     history.append(result)
-                    current_step_names.add(result.agent_name)
-                prev_step_names = current_step_names
-            else:
-                result = await step.run(
-                    task,
-                    context,
-                    hooks=hooks,
-                    structured_output=True,
-                    expand=expand,
-                    extra_tools=extra_tools,
-                )
-                summary, detail = _parse_structured_output(result.output)
-                result.output = detail
-                result.summary = summary
-                context.set(result.agent_name, detail, summary=summary)
-                history.append(result)
-                prev_step_names = {result.agent_name}
+                    prev_step_names = {result.agent_name}
 
             if hooks and hooks.is_active:
                 await hooks.emit(

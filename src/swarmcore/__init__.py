@@ -2,6 +2,7 @@
 
 from swarmcore.agent import Agent
 from swarmcore.context import SharedContext
+from swarmcore.context_tools import make_context_tools
 from swarmcore.exceptions import AgentError, SwarmError
 from swarmcore.flow import Flow, chain, parallel
 from swarmcore.hooks import Event, EventType, Hooks
@@ -26,5 +27,6 @@ __all__ = [
     "ToolCallRecord",
     "chain",
     "enable_logging",
+    "make_context_tools",
     "parallel",
 ]
