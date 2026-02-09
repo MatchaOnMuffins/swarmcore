@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from swarmcore.hooks import Event, EventType, Hooks
 from swarmcore.logging import LoggingHandler, enable_logging
 
 
-def test_logging_handler_info_events(caplog: logging.LogRecord):
+def test_logging_handler_info_events(caplog: pytest.LogCaptureFixture):
     handler = LoggingHandler()
 
     with caplog.at_level(logging.DEBUG, logger="swarmcore"):
@@ -18,7 +20,7 @@ def test_logging_handler_info_events(caplog: logging.LogRecord):
     assert len(info_records) == 3
 
 
-def test_logging_handler_debug_events(caplog: logging.LogRecord):
+def test_logging_handler_debug_events(caplog: pytest.LogCaptureFixture):
     handler = LoggingHandler()
 
     with caplog.at_level(logging.DEBUG, logger="swarmcore"):
@@ -29,7 +31,7 @@ def test_logging_handler_debug_events(caplog: logging.LogRecord):
     assert len(debug_records) == 2
 
 
-def test_logging_handler_error_events(caplog: logging.LogRecord):
+def test_logging_handler_error_events(caplog: pytest.LogCaptureFixture):
     handler = LoggingHandler()
 
     with caplog.at_level(logging.DEBUG, logger="swarmcore"):

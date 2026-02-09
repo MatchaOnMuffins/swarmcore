@@ -7,7 +7,7 @@ import pytest
 
 
 def make_mock_response(
-    content: str = "Mock response",
+    content: str | None = "Mock response",
     tool_calls: list[Any] | None = None,
     prompt_tokens: int = 10,
     completion_tokens: int = 20,

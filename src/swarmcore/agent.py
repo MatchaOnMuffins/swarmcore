@@ -3,9 +3,10 @@ from __future__ import annotations
 import inspect
 import json
 import time
-from typing import TYPE_CHECKING, Any, Callable, get_type_hints
+from typing import TYPE_CHECKING, Any, Callable, cast, get_type_hints
 
 import litellm
+from litellm.types.utils import Choices, ModelResponse, Usage
 
 from swarmcore.context import SharedContext
 from swarmcore.exceptions import AgentError
@@ -159,10 +160,10 @@ class Agent:
                     )
 
                 llm_start = time.monotonic()
-                response = await litellm.acompletion(**kwargs)
+                response = cast(ModelResponse, await litellm.acompletion(**kwargs))
                 llm_duration = round(time.monotonic() - llm_start, 3)
 
-                usage = response.usage
+                usage = cast(Usage | None, getattr(response, "usage", None))
                 call_usage = TokenUsage()
                 if usage:
                     call_usage.prompt_tokens = usage.prompt_tokens or 0
@@ -172,7 +173,7 @@ class Agent:
                     total_usage.completion_tokens += call_usage.completion_tokens
                     total_usage.total_tokens += call_usage.total_tokens
 
-                choice = response.choices[0]
+                choice = cast(Choices, response.choices[0])
                 message = choice.message
                 finish_reason = getattr(choice, "finish_reason", None) or ""
 
