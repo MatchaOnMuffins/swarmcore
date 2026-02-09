@@ -87,6 +87,46 @@ async def fetch_data(url: str) -> str:
     ...
 ```
 
+## Tiered Context
+
+As agents chain together, every prior agent's full output would normally be injected into downstream system prompts, growing linearly. SwarmCore solves this automatically:
+
+- Each agent produces a **summary** (via `<summary>` tags) and a **full output**
+- Downstream agents see **full output** from the immediately preceding step and **summaries** from everything earlier
+- When a summary isn't enough, agents can call the **`expand_context` tool** to retrieve any prior agent's full output on demand
+
+```
+researcher >> analyst >> critic >> writer
+
+analyst sees:  researcher [FULL]
+critic sees:   researcher [SUMMARY] + analyst [FULL]
+writer sees:   researcher [SUMMARY] + analyst [SUMMARY] + critic [FULL]
+               (can call expand_context("researcher") to get full output)
+```
+
+The `expand_context` tool is injected automatically whenever summarized context exists. Agents decide at runtime whether a summary is enough or if they need the full thing — just mention the tool in the agent's instructions:
+
+```python
+writer = Agent(
+    name="writer",
+    instructions=(
+        "Write an executive briefing using the context provided. "
+        "If you need specific data points from earlier research, "
+        "use the expand_context tool to get the full output."
+    ),
+    model="anthropic/claude-opus-4-6",
+)
+
+swarm = Swarm(flow=researcher >> analyst >> critic >> writer)
+result = asyncio.run(swarm.run("AI trends in 2025"))
+
+# Each result carries both the full output and its summary
+for r in result.history:
+    print(f"{r.agent_name}: {len(r.output)} chars, summary: {len(r.summary)} chars")
+```
+
+No configuration needed. If an agent's response doesn't include `<summary>` tags, the full output is used everywhere (graceful degradation).
+
 ## Models
 
 SwarmCore uses [LiteLLM](https://docs.litellm.ai/) under the hood. Any LiteLLM-compatible model string works:
@@ -145,7 +185,8 @@ swarm = Swarm(flow=flow)
 |---|---|---|
 | `agent_name` | `str` | Agent that produced this result |
 | `input_task` | `str` | The task string passed to the agent |
-| `output` | `str` | Agent's text output |
+| `output` | `str` | Agent's text output (summary tags stripped) |
+| `summary` | `str` | Short summary extracted from `<summary>` tags, or full output if none |
 | `model` | `str` | Model used |
 | `duration_seconds` | `float` | Execution time |
 | `token_usage` | `TokenUsage` | Token counts (prompt, completion, total) |
