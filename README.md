@@ -1,6 +1,10 @@
 # SwarmCore
 
-Scalable AI agent coordination. Compose agents into sequential and parallel flows with automatic context management that stays lean as the swarm grows.
+What is Swarm Core?
+
+Scalable AI agent coordination. Compose agents into sequential and parallel flows with automatic context management that stays lean as the number of agents grow.
+
+TL;DR: Multi-agent orchestration with selective context expansion.
 
 <p align="center">
   <img src="assets/core_flow.gif" alt="SwarmCore flow demo" />
