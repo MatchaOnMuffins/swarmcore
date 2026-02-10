@@ -1,11 +1,4 @@
 """
-Pull-mode context demo — product launch analysis pipeline.
-
-This example stress-tests selective context expansion with a longer
-chain (6 agents) and heterogeneous subtasks. Unlike the 4-agent
-research pipeline where every downstream agent pulls everything,
-this scenario creates genuine selectivity pressure:
-
     market_researcher >> tech_analyst >> financial_modeler
         >> risk_assessor >> strategist >> exec_briefer
 
@@ -15,10 +8,6 @@ this scenario creates genuine selectivity pressure:
 - risk_assessor:      regulatory, market, and execution risks
 - strategist:         go-to-market strategy (needs market + financial, not all)
 - exec_briefer:       2-paragraph briefing (must be selective — can't use all 5)
-
-The exec_briefer is the key test: it receives 5 summaries but should
-only pull full detail from 2-3 agents based on what the briefing needs.
-If it pulls all 5, the selective expansion pattern isn't adding value.
 
 Run:  python examples/tiered_context_product.py
 Requires OPENAI_API_KEY (uses gpt-4o-mini by default).
