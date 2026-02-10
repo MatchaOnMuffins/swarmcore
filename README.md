@@ -2,6 +2,10 @@
 
 Coordinate AI agents in a workflow. `pip install swarmcore`.
 
+<p align="center">
+  <img src="assets/core_flow.gif" alt="SwarmCore flow demo" />
+</p>
+
 ## Install
 
 ```bash
