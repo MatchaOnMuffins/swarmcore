@@ -1,20 +1,26 @@
 """
-Tiered context demo — shows exactly what each agent sees, including
-dynamic expansion via the ``expand_context`` tool.
+Pull-mode context demo — product launch analysis pipeline.
 
-    researcher >> analyst >> critic >> writer
+This example stress-tests selective context expansion with a longer
+chain (6 agents) and heterogeneous subtasks. Unlike the 4-agent
+research pipeline where every downstream agent pulls everything,
+this scenario creates genuine selectivity pressure:
 
-Step 1 (researcher): no prior context
-Step 2 (analyst):    researcher [FULL] (immediately preceding)
-Step 3 (critic):     researcher [SUMMARY] + analyst [FULL]
-                     expand_context tool available for researcher
-Step 4 (writer):     researcher [SUMMARY] + analyst [SUMMARY] + critic [FULL]
-                     expand_context tool available for researcher, analyst
+    market_researcher >> tech_analyst >> financial_modeler
+        >> risk_assessor >> strategist >> exec_briefer
 
-If the LLM calls expand_context("researcher"), it gets the full
-original output back as a tool result — no code changes needed.
+- market_researcher:  consumer trends, TAM, competitor landscape
+- tech_analyst:       technical feasibility, architecture, IP concerns
+- financial_modeler:  revenue projections, unit economics, margins
+- risk_assessor:      regulatory, market, and execution risks
+- strategist:         go-to-market strategy (needs market + financial, not all)
+- exec_briefer:       2-paragraph briefing (must be selective — can't use all 5)
 
-Run:  python examples/tiered_context.py
+The exec_briefer is the key test: it receives 5 summaries but should
+only pull full detail from 2-3 agents based on what the briefing needs.
+If it pulls all 5, the selective expansion pattern isn't adding value.
+
+Run:  python examples/tiered_context_product.py
 Requires OPENAI_API_KEY (uses gpt-4o-mini by default).
 """
 
@@ -26,88 +32,91 @@ from typing import Any
 
 import litellm
 
-from swarmcore import Agent, Swarm
+from swarmcore import Agent, Event, EventType, Hooks, Swarm
 
 # ── Agents ────────────────────────────────────────────────────────
 
 MODEL = "openai/gpt-4o-mini"
 
-researcher = Agent(
-    name="researcher",
+market_researcher = Agent(
+    name="market_researcher",
     instructions=(
-        "You are a research specialist. Write 2-3 detailed paragraphs "
-        "about the given topic with specific data points and statistics."
+        "You are a market research specialist. Analyze the target market "
+        "for the given product/initiative. Include: total addressable market "
+        "(TAM) with dollar figures, consumer demographic breakdown, top 3 "
+        "competitors with market share, and recent consumer behavior trends. "
+        "Use specific numbers and cite plausible sources."
     ),
     model=MODEL,
 )
 
-analyst = Agent(
-    name="analyst",
+tech_analyst = Agent(
+    name="tech_analyst",
     instructions=(
-        "You are a data analyst. Review the research in context and "
-        "identify the 3 most important insights. Explain each briefly."
+        "You are a technology analyst. Evaluate the technical feasibility "
+        "of the given product/initiative. Cover: required tech stack and "
+        "architecture, build vs. buy tradeoffs, estimated development "
+        "timeline, IP/patent landscape, and key technical risks. "
+        "Be specific about technologies, frameworks, and timelines."
     ),
     model=MODEL,
 )
 
-critic = Agent(
-    name="critic",
+financial_modeler = Agent(
+    name="financial_modeler",
     instructions=(
-        "You are a critical reviewer. Evaluate the analysis in context "
-        "for gaps, biases, or missing perspectives. Be constructive."
+        "You are a financial analyst. Build a financial outlook for the "
+        "given product/initiative. Include: 3-year revenue projections, "
+        "unit economics (CAC, LTV, margins), break-even timeline, "
+        "required investment, and key financial assumptions. "
+        "Present specific dollar amounts and percentages."
     ),
     model=MODEL,
 )
 
-writer = Agent(
-    name="writer",
+risk_assessor = Agent(
+    name="risk_assessor",
     instructions=(
-        "You are a technical writer. Using the context provided, draft "
-        "a polished 2-paragraph executive briefing. You need specific "
-        "data points from the original research — use the expand_context "
-        "tool to retrieve the researcher's full output if the summary "
-        "doesn't have enough detail."
+        "You are a risk analyst. Identify and evaluate risks for the "
+        "given product/initiative. Categorize risks as: regulatory/legal, "
+        "market/competitive, technical/execution, and financial. "
+        "Rate each risk (high/medium/low), describe potential impact, "
+        "and suggest mitigations. Be specific, not generic."
     ),
     model=MODEL,
 )
 
-agents = [researcher, analyst, critic, writer]
+strategist = Agent(
+    name="strategist",
+    instructions=(
+        "You are a go-to-market strategist. Design a launch strategy for "
+        "the given product/initiative. You need the market research for "
+        "targeting and the financial model for pricing — retrieve those "
+        "full outputs using get_context. You probably do NOT need the full "
+        "technical analysis (the summary should suffice for your purposes). "
+        "Cover: positioning, pricing strategy, channel mix, launch phases, "
+        "and first-year milestones with specific targets."
+    ),
+    model=MODEL,
+)
 
-# ── Intercept LLM calls to capture inputs & raw outputs ──────────
+exec_briefer = Agent(
+    name="exec_briefer",
+    instructions=(
+        "You are an executive communications specialist. Write a crisp "
+        "2-paragraph executive briefing (250 words max) for the C-suite. "
+        "Paragraph 1: opportunity size and strategic recommendation. "
+        "Paragraph 2: key risks and financial headline numbers.\n\n"
+        "IMPORTANT: You have summaries from 5 prior analysts. You do NOT "
+        "need full detail from all of them. Use list_context to see what's "
+        "available, then selectively retrieve only the 2-3 outputs that "
+        "contain the specific data points your briefing needs. A good "
+        "briefing is selective, not exhaustive."
+    ),
+    model=MODEL,
+)
 
-_captures: list[dict[str, Any]] = []
-_original_acompletion = litellm.acompletion
-
-
-async def _capturing_acompletion(**kwargs: Any) -> Any:
-    """Thin wrapper that records system prompt and raw response."""
-    messages = kwargs.get("messages", [])
-    system_msg = next(
-        (m["content"] for m in messages if m["role"] == "system"), ""
-    )
-    tools = kwargs.get("tools", [])
-    tool_names = [t["function"]["name"] for t in tools]
-
-    response = await _original_acompletion(**kwargs)
-
-    content = response.choices[0].message.content or ""  # type: ignore[union-attr]
-    tool_calls_made = []
-    tc_list = response.choices[0].message.tool_calls  # type: ignore[union-attr]
-    if tc_list:
-        tool_calls_made = [tc.function.name for tc in tc_list]
-
-    _captures.append({
-        "system_prompt": system_msg,
-        "raw_output": content,
-        "tool_names_available": tool_names,
-        "tool_calls_made": tool_calls_made,
-    })
-    return response
-
-
-litellm.acompletion = _capturing_acompletion  # type: ignore[assignment]
-
-# ── Helpers ───────────────────────────────────────────────────────
+# ── Colors ────────────────────────────────────────────────────────
 
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -124,132 +133,219 @@ def _section(title: str) -> None:
     print(f"{'─' * 70}{RESET}")
 
 
-def _label(text: str) -> str:
-    return f"{BOLD}{text}{RESET}"
-
-
 def _indent(text: str, prefix: str = "  │ ") -> str:
     return textwrap.indent(text.strip(), prefix)
 
 
-def _extract_context_block(system_prompt: str) -> str | None:
-    marker = "# Context from prior agents"
+# ── Intercept LLM calls to display context hints in real time ─────
+
+_current_agent: str | None = None
+_context_shown: set[str] = set()
+_original_acompletion = litellm.acompletion
+
+
+def _show_hint_from_prompt(system_prompt: str, tool_names: list[str]) -> None:
+    """Parse and display the context hint from the system prompt."""
+    marker = "# Available context"
     idx = system_prompt.find(marker)
+
+    print(f"  {BOLD}Context hint:{RESET}")
     if idx == -1:
-        return None
-    block = system_prompt[idx + len(marker) :]
-    end = block.find("# Output format")
-    if end != -1:
-        block = block[:end]
-    return block.strip()
+        print(f"  │ {DIM}(none — first agent){RESET}")
+    else:
+        block = system_prompt[idx + len(marker) :]
+        end = block.find("# Output format")
+        if end != -1:
+            block = block[:end]
+        for line in block.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("- **"):
+                print(f"  │ {CYAN}{line}{RESET}")
+
+    if tool_names:
+        print(f"  {BOLD}Tools:{RESET} {', '.join(tool_names)}")
+
+
+async def _streaming_acompletion(**kwargs: Any) -> Any:
+    """Wrapper: display context hint on the first LLM call per agent."""
+    agent = _current_agent
+    if agent and agent not in _context_shown:
+        _context_shown.add(agent)
+        messages = kwargs.get("messages", [])
+        system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
+        tools: list[dict[str, Any]] = kwargs.get("tools", [])
+        tool_names = [t["function"]["name"] for t in tools]
+        _show_hint_from_prompt(system_msg, tool_names)
+
+    return await _original_acompletion(**kwargs)
+
+
+litellm.acompletion = _streaming_acompletion  # type: ignore[assignment]
+
+
+# ── Hook handler for streaming lifecycle events ───────────────────
+
+
+def _handle_event(event: Event) -> None:
+    global _current_agent
+    data = event.data
+
+    if event.type == EventType.STEP_START:
+        step_idx = data["step_index"]
+        agents = data["agents"]
+        parallel = data.get("parallel", False)
+        label = " | ".join(agents) if parallel else agents[0]
+        kind = " (parallel)" if parallel else ""
+        _section(f"Step {step_idx + 1}: {label}{kind}")
+
+    elif event.type == EventType.AGENT_START:
+        _current_agent = data["agent"]
+        print(f"\n  {BOLD}▶ {data['agent']}{RESET}")
+
+    elif event.type == EventType.LLM_CALL_START:
+        idx = data["call_index"]
+        print(f"  {DIM}LLM call {idx}...{RESET}", end="", flush=True)
+
+    elif event.type == EventType.LLM_CALL_END:
+        duration = data["duration_seconds"]
+        tokens = data["total_tokens"]
+        finish = data.get("finish_reason", "")
+        suffix = f" → {YELLOW}tool_calls{RESET}" if finish == "tool_calls" else ""
+        print(f" {duration}s, {tokens} tok{suffix}")
+
+    elif event.type == EventType.TOOL_CALL_START:
+        tool = data["tool"]
+        args = data.get("arguments", {})
+        args_str = ", ".join(f'{k}="{v}"' for k, v in args.items())
+        print(f"  │ {RED}⚡ {tool}({args_str}){RESET}")
+
+    elif event.type == EventType.TOOL_CALL_END:
+        duration = data["duration_seconds"]
+        print(f"  │   {DIM}→ returned ({duration}s){RESET}")
+
+    elif event.type == EventType.AGENT_END:
+        _current_agent = None
+        print(f"  {GREEN}✓ {data['agent']} done ({data['duration_seconds']}s){RESET}")
+
+    elif event.type == EventType.AGENT_ERROR:
+        print(f"  {RED}✗ {data.get('agent', '?')} error: {data.get('error')}{RESET}")
 
 
 # ── Main ──────────────────────────────────────────────────────────
 
-flow = researcher >> analyst >> critic >> writer
-swarm = Swarm(flow=flow)
+flow = (
+    market_researcher
+    >> tech_analyst
+    >> financial_modeler
+    >> risk_assessor
+    >> strategist
+    >> exec_briefer
+)
+
+hooks = Hooks()
+hooks.on_all(_handle_event)
+swarm = Swarm(flow=flow, hooks=hooks, context_mode="pull")
 
 
 async def main() -> None:
-    task = "What are the key trends in AI agents in 2025?"
+    task = (
+        "Evaluate the opportunity for launching an AI-powered personal "
+        "nutrition coach app that uses computer vision to analyze meals "
+        "and provides real-time dietary recommendations. Target market: "
+        "health-conscious millennials in the US."
+    )
+
+    agent_names = [
+        "market_researcher",
+        "tech_analyst",
+        "financial_modeler",
+        "risk_assessor",
+        "strategist",
+        "exec_briefer",
+    ]
 
     print(f"\n{BOLD}Task:{RESET} {task}")
-    print(f"{DIM}Flow: researcher >> analyst >> critic >> writer{RESET}")
+    print(f"{DIM}Flow: {' >> '.join(agent_names)} (pull mode){RESET}")
 
     result = await swarm.run(task)
 
-    # Group captures by agent (an agent with tool calls has multiple captures)
-    agent_captures: dict[str, list[dict[str, Any]]] = {}
-    cap_idx = 0
-    for agent_result in result.history:
-        name = agent_result.agent_name
-        agent_captures[name] = []
-        # Each LLM call produces one capture
-        for _ in range(agent_result.llm_call_count):
-            if cap_idx < len(_captures):
-                agent_captures[name].append(_captures[cap_idx])
-                cap_idx += 1
+    # ── Agent outputs ─────────────────────────────────────────────
+    _section("Agent Outputs")
+    for r in result.history:
+        print(f"\n  {BOLD}{r.agent_name}{RESET}")
+        if r.summary and r.summary != r.output:
+            print(f"  {YELLOW}Summary:{RESET} {DIM}(from <summary> tags){RESET}")
+            print(_indent(r.summary))
+        else:
+            print(f"  {DIM}(no <summary> tags — full output used as summary){RESET}")
+        output = r.output.strip()
+        if len(output) > 600:
+            output = output[:600] + f"\n{DIM}... ({len(r.output)} chars total){RESET}"
+        print(f"  {GREEN}Output:{RESET}")
+        print(_indent(output))
 
-    for i, agent_result in enumerate(result.history):
-        name = agent_result.agent_name
-        caps = agent_captures.get(name, [])
-        first_cap = caps[0] if caps else None
+    # ── Context pull analysis ─────────────────────────────────────
+    _section("Context Pull Analysis")
+    print()
+    print(
+        f"  This section shows which agents pulled full context from which "
+        f"prior agents."
+    )
+    print(
+        f"  {BOLD}Ideal behavior:{RESET} later agents should be selective, "
+        f"not pull everything.\n"
+    )
+    for r in result.history:
+        if r.tool_call_count > 0:
+            pulls = []
+            for tc in r.tool_calls:
+                if tc.tool_name == "get_context":
+                    agent_arg = tc.arguments.get("agent_name", "?")
+                    pulls.append(agent_arg)
 
-        _section(f"Step {i + 1}: {name}")
+            available = [
+                h.agent_name
+                for h in result.history
+                if h.agent_name != r.agent_name
+                and result.history.index(h) < result.history.index(r)
+            ]
+            n_available = len(available)
+            n_pulled = len(pulls)
 
-        # Context injected
-        if first_cap:
-            ctx_block = _extract_context_block(first_cap["system_prompt"])
-            print(f"\n  {_label('Context injected into system prompt:')}")
-            if ctx_block is None:
-                print(f"  │ {DIM}(none — first agent){RESET}")
-            else:
-                for line in ctx_block.split("\n"):
-                    if line.startswith("## "):
-                        if "(summary)" in line:
-                            tag = f"{YELLOW}[SUMMARY]{RESET}"
-                        else:
-                            tag = f"{GREEN}[FULL]{RESET}"
-                        print(f"  │ {CYAN}{line}{RESET}  {tag}")
-                    else:
-                        print(f"  │ {DIM}{line}{RESET}")
+            selectivity = "SELECTIVE ✓" if n_pulled < n_available else "PULLED ALL ⚠"
 
-            # Tools available
-            tool_names = first_cap["tool_names_available"]
-            if tool_names:
-                print(
-                    f"\n  {_label('Tools available:')} "
-                    f"{', '.join(tool_names)}"
-                )
+            print(
+                f"  {r.agent_name:18s}  available={n_available}  pulled={n_pulled}  {selectivity}"
+            )
+            if pulls:
+                print(f"  {'':18s}  → {', '.join(pulls)}")
+            if available and n_pulled < n_available:
+                skipped = [a for a in available if a not in pulls]
+                print(f"  {'':18s}  {DIM}skipped: {', '.join(skipped)}{RESET}")
+    print()
 
-        # Tool calls made
-        if agent_result.tool_call_count > 0:
-            print(f"\n  {_label('Tool calls made:')}")
-            for tc in agent_result.tool_calls:
-                print(
-                    f"  │ {RED}{tc.tool_name}{RESET}"
-                    f"({', '.join(f'{k}={v!r}' for k, v in tc.arguments.items())})"
-                )
-                preview = tc.result[:120] + "..." if len(tc.result) > 120 else tc.result
-                print(f"  │ → {DIM}{preview}{RESET}")
-
-        # Raw LLM response (first call only for brevity)
-        if first_cap and first_cap["raw_output"]:
-            raw = first_cap["raw_output"]
-            print(f"\n  {_label('Raw LLM response:')}")
-            if "<summary>" in raw:
-                highlighted = raw.replace(
-                    "<summary>", f"{YELLOW}<summary>{RESET}"
-                ).replace("</summary>", f"{YELLOW}</summary>{RESET}")
-                print(_indent(highlighted))
-            else:
-                print(_indent(raw))
-
-        # Parsed result
-        print(f"\n  {_label('Parsed summary:')}")
-        print(_indent(agent_result.summary, "  │ "))
-        print(f"\n  {_label('Parsed detail (stored as output):')}")
-        print(_indent(agent_result.output, "  │ "))
-
-    # Final summary
-    _section("Result")
-    print(f"\n  {_label('SwarmResult.output:')}")
-    print(_indent(result.output))
+    # ── Token usage ───────────────────────────────────────────────
+    _section("Token Usage")
     print()
     for r in result.history:
         print(
-            f"  {r.agent_name:12s}  "
-            f"output={len(r.output):>5d} chars  "
-            f"summary={len(r.summary):>4d} chars  "
-            f"tools={r.tool_call_count}  "
+            f"  {r.agent_name:18s}  "
             f"tokens={r.token_usage.total_tokens:>5d}  "
+            f"calls={r.llm_call_count}  "
+            f"tools={r.tool_call_count}  "
             f"time={r.duration_seconds}s"
         )
     print(
-        f"\n  {'total':12s}  "
+        f"\n  {'total':18s}  "
         f"tokens={result.total_token_usage.total_tokens:>5d}  "
-        f"time={result.duration_seconds}s\n"
+        f"time={result.duration_seconds}s"
     )
+
+    # ── Final output ──────────────────────────────────────────────
+    _section("Final Output")
+    print()
+    print(_indent(result.output.strip(), "  "))
+    print()
 
 
 if __name__ == "__main__":
