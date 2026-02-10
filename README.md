@@ -38,6 +38,36 @@ print(result.output)
 
 The researcher runs first. Its output is stored in shared context. The writer runs next and sees the research notes in its prompt. `result.output` is the writer's final response.
 
+## Tiered Context
+
+As agents chain together, every prior agent's full output would normally be injected into downstream system prompts, growing linearly. SwarmCore solves this automatically:
+
+- Each agent produces a **summary** (via `<summary>` tags) and a **full output**
+- Downstream agents see **full output** from the immediately preceding step and **summaries** from everything earlier
+- When a summary isn't enough, agents can call the **`expand_context` tool** to retrieve any prior agent's full output on demand
+
+```
+researcher >> analyst >> critic >> writer
+
+analyst sees:  researcher [FULL]
+critic sees:   researcher [SUMMARY] + analyst [FULL]
+writer sees:   researcher [SUMMARY] + analyst [SUMMARY] + critic [FULL]
+               (can call expand_context("researcher") to get full output)
+```
+
+The `expand_context` tool is injected automatically whenever summarized context exists, and agents are prompted to use it — no manual instruction needed. Agents decide at runtime whether a summary is sufficient or if they need the full output.
+
+```python
+swarm = Swarm(flow=researcher >> analyst >> critic >> writer)
+result = asyncio.run(swarm.run("AI trends in 2025"))
+
+# Each result carries both the full output and its summary
+for r in result.history:
+    print(f"{r.agent_name}: {len(r.output)} chars, summary: {len(r.summary)} chars")
+```
+
+No configuration needed. If an agent's response doesn't include `<summary>` tags, the full output is used instead.
+
 ## Flows
 
 Compose agents with `>>` (sequential) and `|` (parallel):
@@ -90,46 +120,6 @@ async def fetch_data(url: str) -> str:
     """Fetch data from a URL."""
     ...
 ```
-
-## Tiered Context
-
-As agents chain together, every prior agent's full output would normally be injected into downstream system prompts, growing linearly. SwarmCore solves this automatically:
-
-- Each agent produces a **summary** (via `<summary>` tags) and a **full output**
-- Downstream agents see **full output** from the immediately preceding step and **summaries** from everything earlier
-- When a summary isn't enough, agents can call the **`expand_context` tool** to retrieve any prior agent's full output on demand
-
-```
-researcher >> analyst >> critic >> writer
-
-analyst sees:  researcher [FULL]
-critic sees:   researcher [SUMMARY] + analyst [FULL]
-writer sees:   researcher [SUMMARY] + analyst [SUMMARY] + critic [FULL]
-               (can call expand_context("researcher") to get full output)
-```
-
-The `expand_context` tool is injected automatically whenever summarized context exists. Agents decide at runtime whether a summary is enough or if they need the full thing — just mention the tool in the agent's instructions:
-
-```python
-writer = Agent(
-    name="writer",
-    instructions=(
-        "Write an executive briefing using the context provided. "
-        "If you need specific data points from earlier research, "
-        "use the expand_context tool to get the full output."
-    ),
-    model="anthropic/claude-opus-4-6",
-)
-
-swarm = Swarm(flow=researcher >> analyst >> critic >> writer)
-result = asyncio.run(swarm.run("AI trends in 2025"))
-
-# Each result carries both the full output and its summary
-for r in result.history:
-    print(f"{r.agent_name}: {len(r.output)} chars, summary: {len(r.summary)} chars")
-```
-
-No configuration needed. If an agent's response doesn't include `<summary>` tags, the full output is used everywhere (graceful degradation).
 
 ## Models
 

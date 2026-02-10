@@ -290,6 +290,32 @@ async def test_expand_tool_injected_when_summaries_exist(mock_llm: AsyncMock):
     assert "A detail." in c_result.tool_calls[0].result
 
 
+async def test_expand_hint_in_system_prompt(mock_llm: AsyncMock):
+    """When expand_context tool is available, agent's system prompt should mention it."""
+    mock_llm.side_effect = [
+        make_mock_response(content="<summary>A sum.</summary>\nA detail."),
+        make_mock_response(content="<summary>B sum.</summary>\nB detail."),
+        make_mock_response(content="C output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+
+    swarm = Swarm(flow=a >> b >> c, context_mode="push")
+    await swarm.run("Task")
+
+    # C has summarized entries (A), so its system prompt should hint about expand_context
+    c_call = mock_llm.call_args_list[2]
+    c_system = c_call.kwargs["messages"][0]["content"]
+    assert "expand_context" in c_system
+
+    # B has no summarized entries (only A at full), so no hint
+    b_call = mock_llm.call_args_list[1]
+    b_system = b_call.kwargs["messages"][0]["content"]
+    assert "expand_context" not in b_system
+
+
 async def test_expand_tool_not_injected_on_first_step(mock_llm: AsyncMock):
     """First agent has no prior context, so no expand tool should be available.
 

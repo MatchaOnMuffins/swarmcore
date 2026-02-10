@@ -151,6 +151,12 @@ class Agent:
             context_str = context.format_for_prompt(expand=expand)
             if context_str:
                 system_content += "\n\n# Context from prior agents\n" + context_str
+        if "expand_context" in run_tools:
+            system_content += (
+                "\n\nSome prior agents' outputs above are shown as summaries. "
+                "If you need the full detailed output from any of them, "
+                "call the `expand_context` tool with that agent's name."
+            )
         if structured_output:
             system_content += (
                 "\n\n# Output format\n"
