@@ -223,6 +223,9 @@ class Agent:
                                 "call_index": call_index,
                                 "finish_reason": finish_reason,
                                 "duration_seconds": llm_duration,
+                                "prompt_tokens": call_usage.prompt_tokens,
+                                "completion_tokens": call_usage.completion_tokens,
+                                "total_tokens": call_usage.total_tokens,
                             },
                         )
                     )
