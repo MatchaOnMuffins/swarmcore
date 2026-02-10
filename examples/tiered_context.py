@@ -1,25 +1,16 @@
 """
-    market_researcher >> tech_analyst >> financial_modeler
+Six-agent product-evaluation pipeline demonstrating pull-mode context.
+
+    (market_researcher | tech_analyst | financial_modeler)
         >> risk_assessor >> strategist >> exec_briefer
 
-- market_researcher:  consumer trends, TAM, competitor landscape
-- tech_analyst:       technical feasibility, architecture, IP concerns
-- financial_modeler:  revenue projections, unit economics, margins
-- risk_assessor:      regulatory, market, and execution risks
-- strategist:         go-to-market strategy (needs market + financial, not all)
-- exec_briefer:       2-paragraph briefing (must be selective — can't use all 5)
-
-Run:  python examples/tiered_context_product.py
-Requires OPENAI_API_KEY (uses gpt-4o-mini by default).
+Run:  python examples/tiered_context.py
 """
 
 from __future__ import annotations
 
 import asyncio
 import textwrap
-from typing import Any
-
-import litellm
 
 from ddgs import DDGS
 
@@ -121,119 +112,48 @@ exec_briefer = Agent(
     model=MODEL,
 )
 
-# ── Colors ────────────────────────────────────────────────────────
+# ── Formatting helpers ────────────────────────────────────────────
 
-GREEN = "\033[92m"
-YELLOW = "\033[93m"
-CYAN = "\033[96m"
-RED = "\033[91m"
-DIM = "\033[2m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+G, Y, R, DIM, BOLD, RST = (
+    "\033[92m", "\033[93m", "\033[91m", "\033[2m", "\033[1m", "\033[0m"
+)
 
 
 def _section(title: str) -> None:
-    print(f"\n{BOLD}{'─' * 70}")
-    print(f"  {title}")
-    print(f"{'─' * 70}{RESET}")
+    print(f"\n{BOLD}{'─' * 70}\n  {title}\n{'─' * 70}{RST}")
 
 
 def _indent(text: str, prefix: str = "  │ ") -> str:
     return textwrap.indent(text.strip(), prefix)
 
 
-# ── Intercept LLM calls to display context hints in real time ─────
-
-_current_agent: str | None = None
-_context_shown: set[str] = set()
-_original_acompletion = litellm.acompletion
-
-
-def _show_hint_from_prompt(system_prompt: str, tool_names: list[str]) -> None:
-    """Parse and display the context hint from the system prompt."""
-    marker = "# Available context"
-    idx = system_prompt.find(marker)
-
-    print(f"  {BOLD}Context hint:{RESET}")
-    if idx == -1:
-        print(f"  │ {DIM}(none — first agent){RESET}")
-    else:
-        block = system_prompt[idx + len(marker) :]
-        end = block.find("# Output format")
-        if end != -1:
-            block = block[:end]
-        for line in block.strip().split("\n"):
-            line = line.strip()
-            if line.startswith("- **"):
-                print(f"  │ {CYAN}{line}{RESET}")
-
-    if tool_names:
-        print(f"  {BOLD}Tools:{RESET} {', '.join(tool_names)}")
-
-
-async def _streaming_acompletion(**kwargs: Any) -> Any:
-    """Wrapper: display context hint on the first LLM call per agent."""
-    agent = _current_agent
-    if agent and agent not in _context_shown:
-        _context_shown.add(agent)
-        messages = kwargs.get("messages", [])
-        system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
-        tools: list[dict[str, Any]] = kwargs.get("tools", [])
-        tool_names = [t["function"]["name"] for t in tools]
-        _show_hint_from_prompt(system_msg, tool_names)
-
-    return await _original_acompletion(**kwargs)
-
-
-litellm.acompletion = _streaming_acompletion  # type: ignore[assignment]
-
-
-# ── Hook handler for streaming lifecycle events ───────────────────
+# ── Hook handler ─────────────────────────────────────────────────
 
 
 def _handle_event(event: Event) -> None:
-    global _current_agent
-    data = event.data
-
-    if event.type == EventType.STEP_START:
-        step_idx = data["step_index"]
-        agents = data["agents"]
-        parallel = data.get("parallel", False)
-        label = " | ".join(agents) if parallel else agents[0]
-        kind = " (parallel)" if parallel else ""
-        _section(f"Step {step_idx + 1}: {label}{kind}")
-
-    elif event.type == EventType.AGENT_START:
-        _current_agent = data["agent"]
-        print(f"\n  {BOLD}▶ {data['agent']}{RESET}")
-
-    elif event.type == EventType.LLM_CALL_START:
-        idx = data["call_index"]
-        print(f"  {DIM}LLM call {idx}...{RESET}", end="", flush=True)
-
-    elif event.type == EventType.LLM_CALL_END:
-        duration = data["duration_seconds"]
-        tokens = data["total_tokens"]
-        finish = data.get("finish_reason", "")
-        suffix = f" → {YELLOW}tool_calls{RESET}" if finish == "tool_calls" else ""
-        print(f" {duration}s, {tokens} tok{suffix}")
-
-    elif event.type == EventType.TOOL_CALL_START:
-        tool = data["tool"]
-        args = data.get("arguments", {})
-        args_str = ", ".join(f'{k}="{v}"' for k, v in args.items())
-        print(f"  │ {RED}⚡ {tool}({args_str}){RESET}")
-
-    elif event.type == EventType.TOOL_CALL_END:
-        duration = data["duration_seconds"]
-        print(f"  │   {DIM}→ returned ({duration}s){RESET}")
-
-    elif event.type == EventType.AGENT_END:
-        _current_agent = None
-        print(f"  {GREEN}✓ {data['agent']} done ({data['duration_seconds']}s){RESET}")
-
-    elif event.type == EventType.AGENT_ERROR:
-        print(f"  {RED}✗ {data.get('agent', '?')} error: {data.get('error')}{RESET}")
+    d = event.data
+    match event.type:
+        case EventType.STEP_START:
+            agents = d["agents"]
+            par = d.get("parallel", False)
+            label = (" | ".join(agents) if par else agents[0])
+            _section(f"Step {d['step_index'] + 1}: {label}{' (parallel)' if par else ''}")
+        case EventType.AGENT_START:
+            print(f"\n  {BOLD}▶ {d['agent']}{RST}")
+        case EventType.LLM_CALL_START:
+            print(f"  {DIM}LLM call {d['call_index']}...{RST}", end="", flush=True)
+        case EventType.LLM_CALL_END:
+            tc = f" → {Y}tool_calls{RST}" if d.get("finish_reason") == "tool_calls" else ""
+            print(f" {d['duration_seconds']}s, {d['total_tokens']} tok{tc}")
+        case EventType.TOOL_CALL_START:
+            args = ", ".join(f'{k}="{v}"' for k, v in d.get("arguments", {}).items())
+            print(f"  │ {R}⚡ {d['tool']}({args}){RST}")
+        case EventType.TOOL_CALL_END:
+            print(f"  │   {DIM}→ returned ({d['duration_seconds']}s){RST}")
+        case EventType.AGENT_END:
+            print(f"  {G}✓ {d['agent']} done ({d['duration_seconds']}s){RST}")
+        case EventType.AGENT_ERROR:
+            print(f"  {R}✗ {d.get('agent', '?')} error: {d.get('error')}{RST}")
 
 
 # ── Main ──────────────────────────────────────────────────────────
@@ -249,103 +169,44 @@ hooks = Hooks()
 hooks.on_all(_handle_event)
 swarm = Swarm(flow=flow, hooks=hooks, context_mode="pull")
 
+TASK = (
+    "Evaluate the opportunity for launching an AI-powered personal "
+    "nutrition coach app that uses computer vision to analyze meals "
+    "and provides real-time dietary recommendations. Target market: "
+    "health-conscious millennials in the US."
+)
+
 
 async def main() -> None:
-    task = (
-        "Evaluate the opportunity for launching an AI-powered personal "
-        "nutrition coach app that uses computer vision to analyze meals "
-        "and provides real-time dietary recommendations. Target market: "
-        "health-conscious millennials in the US."
-    )
-
-    agent_names = [
-        "market_researcher",
-        "tech_analyst",
-        "financial_modeler",
-        "risk_assessor",
-        "strategist",
-        "exec_briefer",
-    ]
-
-    print(f"\n{BOLD}Task:{RESET} {task}")
-    print(f"{DIM}Flow: {' >> '.join(agent_names)} (pull mode){RESET}")
-
-    result = await swarm.run(task)
-
-    # ── Agent outputs ─────────────────────────────────────────────
-    _section("Agent Outputs")
-    for r in result.history:
-        print(f"\n  {BOLD}{r.agent_name}{RESET}")
-        if r.summary and r.summary != r.output:
-            print(f"  {YELLOW}Summary:{RESET} {DIM}(from <summary> tags){RESET}")
-            print(_indent(r.summary))
-        else:
-            print(f"  {DIM}(no <summary> tags — full output used as summary){RESET}")
-        output = r.output.strip()
-        if len(output) > 600:
-            output = output[:600] + f"\n{DIM}... ({len(r.output)} chars total){RESET}"
-        print(f"  {GREEN}Output:{RESET}")
-        print(_indent(output))
+    print(f"\n{BOLD}Task:{RST} {TASK}\n")
+    result = await swarm.run(TASK)
 
     # ── Context pull analysis ─────────────────────────────────────
     _section("Context Pull Analysis")
-    print()
-    print(
-        "  This section shows which agents pulled full context from which prior agents."
-    )
-    print(
-        f"  {BOLD}Ideal behavior:{RESET} later agents should be selective, "
-        f"not pull everything.\n"
-    )
     for r in result.history:
-        if r.tool_call_count > 0:
-            pulls = []
-            for tc in r.tool_calls:
-                if tc.tool_name == "get_context":
-                    agent_arg = tc.arguments.get("agent_name", "?")
-                    pulls.append(agent_arg)
-
-            available = [
-                h.agent_name
-                for h in result.history
-                if h.agent_name != r.agent_name
-                and result.history.index(h) < result.history.index(r)
-            ]
-            n_available = len(available)
-            n_pulled = len(pulls)
-
-            selectivity = "SELECTIVE ✓" if n_pulled < n_available else "PULLED ALL ⚠"
-
-            print(
-                f"  {r.agent_name:18s}  available={n_available}  pulled={n_pulled}  {selectivity}"
-            )
-            if pulls:
-                print(f"  {'':18s}  → {', '.join(pulls)}")
-            if available and n_pulled < n_available:
-                skipped = [a for a in available if a not in pulls]
-                print(f"  {'':18s}  {DIM}skipped: {', '.join(skipped)}{RESET}")
-    print()
+        pulls = [tc.arguments.get("agent_name", "?")
+                 for tc in r.tool_calls if tc.tool_name == "get_context"]
+        if not pulls:
+            continue
+        prior = [h.agent_name for h in result.history
+                 if h.agent_name != r.agent_name
+                 and result.history.index(h) < result.history.index(r)]
+        tag = "SELECTIVE ✓" if len(pulls) < len(prior) else "PULLED ALL ⚠"
+        skipped = [a for a in prior if a not in pulls]
+        print(f"  {r.agent_name:18s}  {len(pulls)}/{len(prior)} pulled  {tag}")
+        if skipped:
+            print(f"  {'':18s}  {DIM}skipped: {', '.join(skipped)}{RST}")
 
     # ── Token usage ───────────────────────────────────────────────
     _section("Token Usage")
-    print()
     for r in result.history:
-        print(
-            f"  {r.agent_name:18s}  "
-            f"tokens={r.token_usage.total_tokens:>5d}  "
-            f"calls={r.llm_call_count}  "
-            f"tools={r.tool_call_count}  "
-            f"time={r.duration_seconds}s"
-        )
-    print(
-        f"\n  {'total':18s}  "
-        f"tokens={result.total_token_usage.total_tokens:>5d}  "
-        f"time={result.duration_seconds}s"
-    )
+        print(f"  {r.agent_name:18s}  {r.token_usage.total_tokens:>5d} tok  "
+              f"{r.llm_call_count} calls  {r.tool_call_count} tools  {r.duration_seconds}s")
+    print(f"\n  {'TOTAL':18s}  {result.total_token_usage.total_tokens:>5d} tok  "
+          f"{result.duration_seconds}s")
 
     # ── Final output ──────────────────────────────────────────────
     _section("Final Output")
-    print()
     print(_indent(result.output.strip(), "  "))
     print()
 
