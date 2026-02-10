@@ -1,6 +1,6 @@
 # SwarmCore
 
-Compose AI agents into sequential and parallel flows with automatic context management that stays lean as the number of agents grow.
+Multi-agent orchestration for Python. Compose agents into sequential and parallel flows with context sharing that scales.
 
 <p align="center">
   <img src="assets/core_flow.gif" alt="SwarmCore flow demo" />
@@ -10,16 +10,16 @@ Compose AI agents into sequential and parallel flows with automatic context mana
 pip install swarmcore
 ```
 
-## What it produces
+## Output comparison
 
-Same model. Same prompt. The difference is coordination.
+Both outputs below use the same model and prompt. The first is a single agent call; the second is a five-agent SwarmCore flow.
 
 > *Evaluate the opportunity for launching an AI-powered personal nutrition coach app that uses computer vision to analyze meals and provides real-time dietary recommendations. Target market: health-conscious millennials in the US.*
 
-**Single agent** — generic strategic assessment
+**Single agent** — high-level strategic assessment
 
 <details>
-<summary>Read full output</summary>
+<summary>View output</summary>
 
 The opportunity for an AI-powered personal nutrition coach targeting health-conscious US millennials is compelling, driven by high smartphone usage, strong interest in personalized wellness, and frustration with manual calorie tracking. Computer vision–based meal analysis directly addresses a major pain point by reducing friction, while real-time dietary feedback aligns well with millennials' preference for on-demand, data-driven guidance integrated into daily life.
 
@@ -27,10 +27,10 @@ That said, the market is competitive and execution-sensitive: differentiation wi
 
 </details>
 
-**SwarmCore (5 agents)** — specific market data, unit economics, go-to-market strategy
+**Five-agent flow** — market sizing, unit economics, go-to-market strategy
 
 <details>
-<summary>Read full output</summary>
+<summary>View output</summary>
 
 The opportunity is meaningful if we position this as *frictionless meal logging plus actionable micro-coaching*, not "perfect" automated nutrition. The US mHealth apps market is estimated at **~$12.75B (2024)**, and meal occasions are increasingly "trackable" (Circana reports **86% of eating occasions are sourced from home**), creating high usage frequency for a camera-first workflow. Strategically, we should **launch with a hybrid CV + user-confirmation experience** (detect items, then prompt 1–2 quick portion inputs) and focus differentiation on (1) speed/low-friction capture, (2) trustworthy, goal-based recommendations, and (3) privacy-first handling of images. MVP is technically feasible in **~4–6 months** using pretrained vision + a constrained food ontology + human-in-the-loop QA; true defensibility likely requires **9–18 months** of data collection, model tuning, and nutrition governance.
 
@@ -38,13 +38,13 @@ Key risks are (a) **portion estimation accuracy** (single-photo volume inference
 
 </details>
 
-## How it works
+## Context management
 
-Agents in a flow share context automatically. SwarmCore keeps it lean — each agent sees only what it needs:
+Each agent in a flow receives context from prior steps automatically:
 
-- **Immediately preceding step** → full output
-- **Everything earlier** → summaries only
-- **Need more?** → agents call `expand_context` at runtime to pull any prior agent's full output
+- **Previous step** — full output
+- **Earlier steps** — summaries only
+- **On demand** — agents call `expand_context` to retrieve any prior agent's full output
 
 ```
 agent_1 >> agent_2 >> ... >> agent_10
@@ -53,7 +53,7 @@ agent_10 sees: agents 1-8 [SUMMARIES] + agent_9 [FULL]
                (can expand any earlier agent on demand)
 ```
 
-Summaries are extracted from `<summary>` tags in agent output. If omitted, the full output is used instead.
+Agents produce summaries via `<summary>` tags in their output. If omitted, the full output is used as both summary and detail.
 
 ## Quickstart
 
@@ -68,7 +68,7 @@ result = asyncio.run(Swarm(flow=researcher >> writer).run("AI agent trends in 20
 print(result.output)
 ```
 
-The researcher runs first, its output goes into shared context, and the writer sees it automatically.
+`researcher` runs first. Its output is stored in shared context, which `writer` receives automatically.
 
 ## Flows
 
@@ -91,7 +91,7 @@ Parallel agents share the same context snapshot — they don't see each other's 
 
 ## Tools
 
-Plain Python functions:
+Tools are plain Python functions. Type hints and docstrings are converted to tool schemas automatically. Sync and async both work.
 
 ```python
 def search_web(query: str) -> str:
@@ -100,8 +100,6 @@ def search_web(query: str) -> str:
 
 agent = Agent(name="researcher", instructions="...", tools=[search_web])
 ```
-
-Type hints and docstrings are converted to tool schemas automatically. Sync and async functions both work.
 
 ## Models
 
