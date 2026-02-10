@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from swarmcore import Agent, Swarm, SwarmResult, chain, parallel
 from swarmcore.hooks import EventType, Hooks
@@ -529,6 +528,173 @@ async def test_pull_mode_parallel_step(mock_llm: AsyncMock):
         tools = call.kwargs.get("tools", [])
         tool_names = {t["function"]["name"] for t in tools}
         assert "get_context" in tool_names
+
+
+# --- Nested sub-flow execution tests ---
+
+
+async def test_nested_subchains_execution_order(mock_llm: AsyncMock):
+    """(a >> b) | (c >> d): a runs before b, c before d, branches concurrent."""
+    call_order: list[str] = []
+
+    async def track_calls(**kwargs):
+        messages = kwargs["messages"]
+        system = messages[0]["content"]
+        # Identify which agent this is by instructions
+        if "Do A." in system:
+            call_order.append("a")
+            return make_mock_response(content="A output")
+        elif "Do B." in system:
+            call_order.append("b")
+            return make_mock_response(content="B output")
+        elif "Do C." in system:
+            call_order.append("c")
+            return make_mock_response(content="C output")
+        elif "Do D." in system:
+            call_order.append("d")
+            return make_mock_response(content="D output")
+        return make_mock_response(content="Unknown")
+
+    mock_llm.side_effect = track_calls
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+    d = Agent(name="d", instructions="Do D.")
+
+    swarm = Swarm(flow=(a >> b) | (c >> d), context_mode="pull")
+    result = await swarm.run("Task")
+
+    assert len(result.history) == 4
+    assert result.context["a"] == "A output"
+    assert result.context["b"] == "B output"
+    assert result.context["c"] == "C output"
+    assert result.context["d"] == "D output"
+
+    # a must come before b, c must come before d
+    assert call_order.index("a") < call_order.index("b")
+    assert call_order.index("c") < call_order.index("d")
+
+
+async def test_nested_subchain_context_sharing(mock_llm: AsyncMock):
+    """Within sub-chain a >> b, b sees a's output in context."""
+
+    async def route(**kwargs):
+        system = kwargs["messages"][0]["content"]
+        if "Do A." in system:
+            return make_mock_response(content="A output")
+        if "Do B." in system:
+            return make_mock_response(content="B output")
+        if "Do C." in system:
+            return make_mock_response(content="C output")
+        return make_mock_response(content="Unknown")
+
+    mock_llm.side_effect = route
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+
+    swarm = Swarm(flow=(a >> b) | c, context_mode="pull")
+    result = await swarm.run("Task")
+
+    # b should have context tools available (since a ran before it)
+    assert result.context["a"] == "A output"
+    assert result.context["b"] == "B output"
+    assert result.context["c"] == "C output"
+
+
+async def test_nested_prev_step_names_after_parallel(mock_llm: AsyncMock):
+    """After (a>>b) | (c>>d), next agent's prev_step_names = {"b", "d"}."""
+
+    async def route(**kwargs):
+        system = kwargs["messages"][0]["content"]
+        if "Do A." in system:
+            return make_mock_response(content="A output")
+        if "Do B." in system:
+            return make_mock_response(content="B output")
+        if "Do C." in system:
+            return make_mock_response(content="C output")
+        if "Do D." in system:
+            return make_mock_response(content="D output")
+        if "Write." in system:
+            return make_mock_response(content="Writer output")
+        return make_mock_response(content="Unknown")
+
+    mock_llm.side_effect = route
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+    d = Agent(name="d", instructions="Do D.")
+    writer = Agent(name="writer", instructions="Write.")
+
+    swarm = Swarm(flow=((a >> b) | (c >> d)) >> writer, context_mode="push")
+    result = await swarm.run("Task")
+
+    assert result.output == "Writer output"
+    assert len(result.history) == 5
+
+    # Writer's system prompt should have b and d's full output (as prev step)
+    writer_call = mock_llm.call_args_list[-1]
+    writer_system = writer_call.kwargs["messages"][0]["content"]
+    assert "B output" in writer_system
+    assert "D output" in writer_system
+
+
+async def test_nested_mixed_parallel_group(mock_llm: AsyncMock):
+    """Mixed parallel group: bare Agent + sub-Flow in same parallel step."""
+
+    async def route(**kwargs):
+        system = kwargs["messages"][0]["content"]
+        if "Do A." in system:
+            return make_mock_response(content="A output")
+        if "Do B." in system:
+            return make_mock_response(content="B output")
+        if "Do C." in system:
+            return make_mock_response(content="C output")
+        return make_mock_response(content="Unknown")
+
+    mock_llm.side_effect = route
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+
+    # c is bare agent, a >> b is a sub-flow
+    swarm = Swarm(flow=(a >> b) | c, context_mode="pull")
+    result = await swarm.run("Task")
+
+    assert result.context["a"] == "A output"
+    assert result.context["b"] == "B output"
+    assert result.context["c"] == "C output"
+
+
+async def test_nested_token_accumulation(mock_llm: AsyncMock):
+    """Token accumulation includes all sub-flow agents."""
+
+    async def route(**kwargs):
+        system = kwargs["messages"][0]["content"]
+        if "Do A." in system:
+            return make_mock_response(content="A output", prompt_tokens=5, completion_tokens=10)
+        if "Do B." in system:
+            return make_mock_response(content="B output", prompt_tokens=8, completion_tokens=12)
+        if "Do C." in system:
+            return make_mock_response(content="C output", prompt_tokens=3, completion_tokens=7)
+        return make_mock_response(content="Unknown")
+
+    mock_llm.side_effect = route
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+
+    swarm = Swarm(flow=(a >> b) | c, context_mode="pull")
+    result = await swarm.run("Task")
+
+    assert result.total_token_usage.prompt_tokens == 16  # 5 + 3 + 8
+    assert result.total_token_usage.completion_tokens == 29  # 10 + 7 + 12
+    assert result.total_token_usage.total_tokens == 45
 
 
 async def test_pull_mode_default(mock_llm: AsyncMock):

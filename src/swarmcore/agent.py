@@ -94,24 +94,20 @@ class Agent:
         if isinstance(other, Agent):
             return _Flow([self, other])
         if isinstance(other, _Flow):
-            steps: list[Agent | list[Agent]] = [self, *other._steps]
+            steps: list[Agent | list[Agent | _Flow]] = [self, *other._steps]
             return _Flow(steps)
         return NotImplemented
 
     def __or__(self, other: Agent | Flow) -> Flow:
-        from swarmcore.flow import Flow as _Flow
+        from swarmcore.flow import Flow as _Flow, _or_items
 
-        if isinstance(other, Agent):
-            return _Flow([[self, other]])
-        if isinstance(other, _Flow):
-            agents: list[Agent] = []
-            for step in other._steps:
-                if isinstance(step, list):
-                    agents.extend(step)
-                else:
-                    agents.append(step)
-            return _Flow([[self] + agents])
-        return NotImplemented
+        other_items = _or_items(other)
+        if not other_items:
+            return NotImplemented  # type: ignore[return-value]
+
+        items: list[Agent | _Flow] = [self]
+        items.extend(other_items)
+        return _Flow([items])
 
     async def run(
         self,

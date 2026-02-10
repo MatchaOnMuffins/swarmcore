@@ -63,7 +63,7 @@ def test_chain_empty_raises():
 
 def test_parallel_two_agents(a: Agent, b: Agent):
     group = parallel(a, b)
-    assert group.agents == [a, b]
+    assert group.items == [a, b]
 
 
 def test_parallel_fewer_than_two_raises(a: Agent):
@@ -169,3 +169,104 @@ def test_repr_parallel(a: Agent, b: Agent):
 def test_repr_mixed(a: Agent, b: Agent, c: Agent, d: Agent):
     flow = chain(a, parallel(b, c), d)
     assert repr(flow) == "Flow(a >> [b, c] >> d)"
+
+
+# --- Nested flow support ---
+
+
+def test_nested_parallel_subchains(a: Agent, b: Agent, c: Agent, d: Agent):
+    """(a >> b) | (c >> d) produces one parallel step with two Flow elements."""
+    flow = (a >> b) | (c >> d)
+    assert len(flow.steps) == 1
+    step = flow.steps[0]
+    assert isinstance(step, list)
+    assert len(step) == 2
+    assert isinstance(step[0], Flow)
+    assert isinstance(step[1], Flow)
+    # Each sub-flow has 2 sequential steps
+    assert len(step[0].steps) == 2
+    assert len(step[1].steps) == 2
+
+
+def test_nested_agent_or_subchain(a: Agent, b: Agent, c: Agent):
+    """a | (b >> c) produces [[a, Flow(b >> c)]]."""
+    flow = a | (b >> c)
+    assert len(flow.steps) == 1
+    step = flow.steps[0]
+    assert isinstance(step, list)
+    assert len(step) == 2
+    assert step[0] is a
+    assert isinstance(step[1], Flow)
+    assert len(step[1].steps) == 2
+
+
+def test_nested_functional_api(a: Agent, b: Agent, c: Agent, d: Agent):
+    """chain(parallel(chain(a, b), chain(c, d))) works via functional API."""
+    flow = chain(parallel(chain(a, b), chain(c, d)))
+    assert len(flow.steps) == 1
+    step = flow.steps[0]
+    assert isinstance(step, list)
+    assert len(step) == 2
+    assert isinstance(step[0], Flow)
+    assert isinstance(step[1], Flow)
+
+
+def test_nested_subchains_then_agent(a: Agent, b: Agent, c: Agent, d: Agent):
+    """(a >> b) | (c >> d) >> writer produces parallel step then sequential agent."""
+    writer = Agent(name="writer", instructions="Write.")
+    flow = ((a >> b) | (c >> d)) >> writer
+    assert len(flow.steps) == 2
+    # First step is the parallel group
+    assert isinstance(flow.steps[0], list)
+    assert len(flow.steps[0]) == 2
+    # Second step is the writer
+    assert flow.steps[1] is writer
+
+
+def test_or_backward_compat_flat(a: Agent, b: Agent):
+    """a | b still produces [[a, b]] (backward compat, no nesting)."""
+    flow = a | b
+    assert len(flow.steps) == 1
+    step = flow.steps[0]
+    assert isinstance(step, list)
+    assert len(step) == 2
+    assert step[0] is a
+    assert step[1] is b
+
+
+def test_nested_agents_property(a: Agent, b: Agent, c: Agent, d: Agent):
+    """.agents returns all agents from nested sub-flows."""
+    flow = (a >> b) | (c >> d)
+    agents = flow.agents
+    names = [ag.name for ag in agents]
+    assert "a" in names
+    assert "b" in names
+    assert "c" in names
+    assert "d" in names
+    assert len(agents) == 4
+
+
+def test_nested_repr(a: Agent, b: Agent, c: Agent, d: Agent):
+    """repr renders nested sub-flows with parentheses."""
+    flow = (a >> b) | (c >> d)
+    r = repr(flow)
+    assert "(a >> b)" in r
+    assert "(c >> d)" in r
+
+
+def test_or_merges_parallel_groups(a: Agent, b: Agent, c: Agent):
+    """a | (b | c) still produces a flat parallel group (no nesting)."""
+    flow = a | (b | c)
+    assert len(flow.steps) == 1
+    step = flow.steps[0]
+    assert isinstance(step, list)
+    assert len(step) == 3
+
+
+def test_flow_or_merges_parallel_groups(a: Agent, b: Agent, c: Agent):
+    """(a | b) | c extends the parallel group."""
+    flow = (a | b) | c
+    assert len(flow.steps) == 1
+    step = flow.steps[0]
+    assert isinstance(step, list)
+    assert len(step) == 3

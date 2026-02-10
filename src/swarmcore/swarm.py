@@ -5,6 +5,7 @@ import re
 import time
 from typing import Callable, Literal
 
+from swarmcore.agent import Agent
 from swarmcore.context import SharedContext
 from swarmcore.context_tools import make_context_tools
 from swarmcore.flow import Flow
@@ -48,6 +49,40 @@ def _make_expand_tool(context: SharedContext) -> Callable[[str], str]:
     return expand_context
 
 
+def _collect_agent_names(step: Agent | list[Agent | Flow]) -> list[str]:
+    """Collect agent names from a step for hook emission."""
+    if isinstance(step, list):
+        names: list[str] = []
+        for item in step:
+            if isinstance(item, Flow):
+                names.extend(a.name for a in item.agents)
+            else:
+                names.append(item.name)
+        return names
+    return [step.name]
+
+
+def _terminal_names(step: Agent | list[Agent | Flow]) -> set[str]:
+    """Return the names of the terminal agents in a step."""
+    if isinstance(step, list):
+        names: set[str] = set()
+        for item in step:
+            if isinstance(item, Flow):
+                last = item.steps[-1]
+                if isinstance(last, list):
+                    for sub in last:
+                        if isinstance(sub, Flow):
+                            names |= _terminal_names(sub.steps[-1])
+                        else:
+                            names.add(sub.name)
+                else:
+                    names.add(last.name)
+            else:
+                names.add(item.name)
+        return names
+    return {step.name}
+
+
 class Swarm:
     def __init__(
         self,
@@ -59,6 +94,145 @@ class Swarm:
         self._agents = {a.name: a for a in flow.agents}
         self._hooks = hooks
         self._context_mode = context_mode
+
+    async def _run_agent_pull(
+        self,
+        agent: Agent,
+        task: str,
+        context: SharedContext,
+        hooks: Hooks | None,
+    ) -> AgentResult:
+        """Run a single agent in pull mode, handling context tools and output parsing."""
+        has_context = bool(context.keys())
+        if has_context:
+            pull_tools = make_context_tools(context)
+            hint_lines = [
+                "Prior agent outputs are available. Use the "
+                "`list_context`, `get_context`, and `search_context` "
+                "tools to retrieve them as needed.",
+                "",
+            ]
+            for name, summary, _full, _count in context.entries():
+                hint_lines.append(f"- **{name}**: {summary}")
+            context_hint: str | None = "\n".join(hint_lines)
+            extra_tools = pull_tools
+        else:
+            context_hint = None
+            extra_tools = None
+
+        result = await agent.run(
+            task,
+            context,
+            hooks=hooks,
+            structured_output=True,
+            extra_tools=extra_tools,
+            context_hint=context_hint,
+        )
+        summary, detail = _parse_structured_output(result.output)
+        result.output = detail
+        result.summary = summary
+        context.set(result.agent_name, detail, summary=summary)
+        return result
+
+    async def _run_agent_push(
+        self,
+        agent: Agent,
+        task: str,
+        context: SharedContext,
+        hooks: Hooks | None,
+        expand: set[str] | None,
+        expand_tool: Callable[[str], str],
+    ) -> AgentResult:
+        """Run a single agent in push mode, handling expand tool and output parsing."""
+        context_keys = set(context.to_dict().keys())
+        summarized = context_keys - (expand or set())
+        extra_tools = [expand_tool] if summarized else None
+
+        result = await agent.run(
+            task,
+            context,
+            hooks=hooks,
+            structured_output=True,
+            expand=expand,
+            extra_tools=extra_tools,
+        )
+        summary, detail = _parse_structured_output(result.output)
+        result.output = detail
+        result.summary = summary
+        context.set(result.agent_name, detail, summary=summary)
+        return result
+
+    async def _run_subflow(
+        self,
+        subflow: Flow,
+        task: str,
+        context: SharedContext,
+        hooks: Hooks | None,
+        expand_tool: Callable[[str], str],
+        prev_step_names: set[str],
+    ) -> tuple[list[AgentResult], set[str]]:
+        """Run a sub-flow's steps sequentially, returning results and terminal agent names."""
+        results: list[AgentResult] = []
+        sub_prev: set[str] = set(prev_step_names)
+
+        for step in subflow.steps:
+            if self._context_mode == "pull":
+                if isinstance(step, list):
+                    coros = []
+                    for item in step:
+                        if isinstance(item, Flow):
+                            coros.append(
+                                self._run_subflow(item, task, context, hooks, expand_tool, sub_prev)
+                            )
+                        else:
+                            coros.append(self._run_agent_pull(item, task, context, hooks))
+                    gathered = await asyncio.gather(*coros)
+                    current_names: set[str] = set()
+                    for g in gathered:
+                        if isinstance(g, tuple):
+                            sub_results, sub_terminal = g
+                            results.extend(sub_results)
+                            current_names |= sub_terminal
+                        else:
+                            results.append(g)
+                            current_names.add(g.agent_name)
+                    sub_prev = current_names
+                else:
+                    result = await self._run_agent_pull(step, task, context, hooks)
+                    results.append(result)
+                    sub_prev = {result.agent_name}
+            else:
+                expand = sub_prev or None
+                if isinstance(step, list):
+                    coros = []
+                    for item in step:
+                        if isinstance(item, Flow):
+                            coros.append(
+                                self._run_subflow(item, task, context, hooks, expand_tool, sub_prev)
+                            )
+                        else:
+                            coros.append(
+                                self._run_agent_push(item, task, context, hooks, expand, expand_tool)
+                            )
+                    gathered = await asyncio.gather(*coros)
+                    current_names = set()
+                    for g in gathered:
+                        if isinstance(g, tuple):
+                            sub_results, sub_terminal = g
+                            results.extend(sub_results)
+                            current_names |= sub_terminal
+                        else:
+                            results.append(g)
+                            current_names.add(g.agent_name)
+                    sub_prev = current_names
+                else:
+                    result = await self._run_agent_push(
+                        step, task, context, hooks, expand, expand_tool
+                    )
+                    results.append(result)
+                    sub_prev = {result.agent_name}
+
+        return results, sub_prev
 
     async def run(self, task: str) -> SwarmResult:
         """Execute the swarm workflow on the given task."""
@@ -80,10 +254,7 @@ class Swarm:
 
         for step_index, step in enumerate(self._steps):
             if hooks and hooks.is_active:
-                if isinstance(step, list):
-                    agent_names = [a.name for a in step]
-                else:
-                    agent_names = [step.name]
+                agent_names = _collect_agent_names(step)
                 await hooks.emit(
                     Event(
                         EventType.STEP_START,
@@ -96,107 +267,70 @@ class Swarm:
                 )
 
             if self._context_mode == "pull":
-                # Pull mode: lightweight hint + context tools
-                has_context = bool(context.keys())
-                if has_context:
-                    pull_tools = make_context_tools(context)
-                    hint_lines = [
-                        "Prior agent outputs are available. Use the "
-                        "`list_context`, `get_context`, and `search_context` "
-                        "tools to retrieve them as needed.",
-                        "",
-                    ]
-                    for name, summary, _full, _count in context.entries():
-                        hint_lines.append(f"- **{name}**: {summary}")
-                    context_hint: str | None = "\n".join(hint_lines)
-                    extra_tools = pull_tools
-                else:
-                    context_hint = None
-                    extra_tools = None
-
                 if isinstance(step, list):
-                    coros = [
-                        agent.run(
-                            task,
-                            context,
-                            hooks=hooks,
-                            structured_output=True,
-                            extra_tools=extra_tools,
-                            context_hint=context_hint,
-                        )
-                        for agent in step
-                    ]
-                    results = await asyncio.gather(*coros)
+                    coros = []
+                    for item in step:
+                        if isinstance(item, Flow):
+                            coros.append(
+                                self._run_subflow(
+                                    item, task, context, hooks, expand_tool, prev_step_names
+                                )
+                            )
+                        else:
+                            coros.append(
+                                self._run_agent_pull(item, task, context, hooks)
+                            )
+                    gathered = await asyncio.gather(*coros)
 
                     current_step_names: set[str] = set()
-                    for result in results:
-                        summary, detail = _parse_structured_output(result.output)
-                        result.output = detail
-                        result.summary = summary
-                        context.set(result.agent_name, detail, summary=summary)
-                        history.append(result)
-                        current_step_names.add(result.agent_name)
+                    for g in gathered:
+                        if isinstance(g, tuple):
+                            sub_results, sub_terminal = g
+                            history.extend(sub_results)
+                            current_step_names |= sub_terminal
+                        else:
+                            history.append(g)
+                            current_step_names.add(g.agent_name)
                     prev_step_names = current_step_names
                 else:
-                    result = await step.run(
-                        task,
-                        context,
-                        hooks=hooks,
-                        structured_output=True,
-                        extra_tools=extra_tools,
-                        context_hint=context_hint,
-                    )
-                    summary, detail = _parse_structured_output(result.output)
-                    result.output = detail
-                    result.summary = summary
-                    context.set(result.agent_name, detail, summary=summary)
+                    result = await self._run_agent_pull(step, task, context, hooks)
                     history.append(result)
                     prev_step_names = {result.agent_name}
             else:
-                # Push mode: existing tiered expand logic
+                # Push mode
                 expand = prev_step_names or None
 
-                # Offer the expand tool when there are summarized entries
-                context_keys = set(context.to_dict().keys())
-                summarized = context_keys - (expand or set())
-                extra_tools = [expand_tool] if summarized else None
-
                 if isinstance(step, list):
-                    coros = [
-                        agent.run(
-                            task,
-                            context,
-                            hooks=hooks,
-                            structured_output=True,
-                            expand=expand,
-                            extra_tools=extra_tools,
-                        )
-                        for agent in step
-                    ]
-                    results = await asyncio.gather(*coros)
+                    coros = []
+                    for item in step:
+                        if isinstance(item, Flow):
+                            coros.append(
+                                self._run_subflow(
+                                    item, task, context, hooks, expand_tool, prev_step_names
+                                )
+                            )
+                        else:
+                            coros.append(
+                                self._run_agent_push(
+                                    item, task, context, hooks, expand, expand_tool
+                                )
+                            )
+                    gathered = await asyncio.gather(*coros)
 
                     current_step_names_push: set[str] = set()
-                    for result in results:
-                        summary, detail = _parse_structured_output(result.output)
-                        result.output = detail
-                        result.summary = summary
-                        context.set(result.agent_name, detail, summary=summary)
-                        history.append(result)
-                        current_step_names_push.add(result.agent_name)
+                    for g in gathered:
+                        if isinstance(g, tuple):
+                            sub_results, sub_terminal = g
+                            history.extend(sub_results)
+                            current_step_names_push |= sub_terminal
+                        else:
+                            history.append(g)
+                            current_step_names_push.add(g.agent_name)
                     prev_step_names = current_step_names_push
                 else:
-                    result = await step.run(
-                        task,
-                        context,
-                        hooks=hooks,
-                        structured_output=True,
-                        expand=expand,
-                        extra_tools=extra_tools,
+                    result = await self._run_agent_push(
+                        step, task, context, hooks, expand, expand_tool
                     )
-                    summary, detail = _parse_structured_output(result.output)
-                    result.output = detail
-                    result.summary = summary
-                    context.set(result.agent_name, detail, summary=summary)
                     history.append(result)
                     prev_step_names = {result.agent_name}
 

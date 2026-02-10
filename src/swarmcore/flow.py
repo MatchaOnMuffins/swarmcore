@@ -11,35 +11,71 @@ if TYPE_CHECKING:
 class _ParallelGroup:
     """Marker returned by ``parallel()`` and consumed by ``chain()``."""
 
-    def __init__(self, agents: list[Agent]) -> None:
-        self.agents = agents
+    def __init__(self, items: list[Agent | Flow]) -> None:
+        self.items = items
+
+
+def _or_items(value: Agent | Flow) -> list[Agent | Flow]:
+    """Normalize a value for use in the ``|`` operator.
+
+    - Single Agent → ``[agent]``
+    - Single-agent Flow → ``[agent]``  (unwrap)
+    - Single parallel-group Flow → the group's items  (merge)
+    - Multi-step Flow → ``[flow]``  (keep as sub-flow)
+    """
+    from swarmcore.agent import Agent
+
+    if isinstance(value, Agent):
+        return [value]
+    if isinstance(value, Flow):
+        if len(value._steps) == 1:
+            step = value._steps[0]
+            if isinstance(step, list):
+                # Single parallel-group: merge its items
+                return list(step)
+            # Single-agent Flow: unwrap
+            return [step]
+        # Multi-step Flow: keep as sub-flow
+        return [value]
+    return []
 
 
 class Flow:
     """Immutable execution plan holding a sequence of steps.
 
     Each step is either a single :class:`Agent` (sequential) or a
-    ``list[Agent]`` (parallel).
+    ``list[Agent | Flow]`` (parallel).  A ``Flow`` inside a parallel
+    group runs its own steps sequentially within that concurrent group.
     """
 
-    def __init__(self, steps: list[Agent | list[Agent]]) -> None:
-        self._steps: list[Agent | list[Agent]] = list(steps)
+    def __init__(self, steps: list[Agent | list[Agent | Flow]]) -> None:
+        self._steps: list[Agent | list[Agent | Flow]] = list(steps)
 
     @property
-    def steps(self) -> list[Agent | list[Agent]]:
+    def steps(self) -> list[Agent | list[Agent | Flow]]:
         return list(self._steps)
 
     @property
     def agents(self) -> list[Agent]:
-        """All unique agents in step order."""
+        """All unique agents in step order, recursing into sub-flows."""
         seen: set[str] = set()
         result: list[Agent] = []
         for step in self._steps:
-            items = step if isinstance(step, list) else [step]
-            for agent in items:
-                if agent.name not in seen:
-                    seen.add(agent.name)
-                    result.append(agent)
+            if isinstance(step, list):
+                for item in step:
+                    if isinstance(item, Flow):
+                        for agent in item.agents:
+                            if agent.name not in seen:
+                                seen.add(agent.name)
+                                result.append(agent)
+                    else:
+                        if item.name not in seen:
+                            seen.add(item.name)
+                            result.append(item)
+            else:
+                if step.name not in seen:
+                    seen.add(step.name)
+                    result.append(step)
         return result
 
     def __rshift__(self, other: Agent | Flow) -> Flow:
@@ -52,43 +88,35 @@ class Flow:
         return NotImplemented
 
     def __or__(self, other: Agent | Flow) -> Flow:
-        from swarmcore.agent import Agent
+        # Normalize other into a list of items to put in the parallel group
+        other_items: list[Agent | Flow] = _or_items(other)
+        if not other_items:
+            return NotImplemented  # type: ignore[return-value]
 
-        if isinstance(other, Agent):
-            if self._steps and isinstance(self._steps[-1], list):
-                new_steps = list(self._steps)
-                new_steps[-1] = list(self._steps[-1]) + [other]
-                return Flow(new_steps)
-            if self._steps and not isinstance(self._steps[-1], list):
-                new_steps = list(self._steps[:-1])
-                new_steps.append([self._steps[-1], other])
-                return Flow(new_steps)
-            return Flow([[other]])
-        if isinstance(other, Flow):
-            # Merge all agents from other into a parallel group with last step
-            all_other_agents: list[Agent] = []
-            for step in other._steps:
-                if isinstance(step, list):
-                    all_other_agents.extend(step)
-                else:
-                    all_other_agents.append(step)
-            if self._steps and isinstance(self._steps[-1], list):
-                new_steps = list(self._steps)
-                new_steps[-1] = list(self._steps[-1]) + all_other_agents
-                return Flow(new_steps)
-            if self._steps and not isinstance(self._steps[-1], list):
-                new_steps = list(self._steps[:-1])
-                new_steps.append([self._steps[-1]] + all_other_agents)
-                return Flow(new_steps)
-            return Flow([all_other_agents])
-        return NotImplemented
+        # Normalize self into a list of items already in the parallel group
+        self_items: list[Agent | Flow] = _or_items(self)
+
+        # If self was already a parallel group (possibly with prefix steps),
+        # extend it.  Otherwise combine self_items + other_items.
+        if self._steps and isinstance(self._steps[-1], list):
+            # self ends with a parallel group — extend it
+            new_steps: list[Agent | list[Agent | Flow]] = list(self._steps)
+            new_steps[-1] = list(self._steps[-1]) + other_items
+            return Flow(new_steps)
+
+        return Flow([self_items + other_items])
 
     def __repr__(self) -> str:
         parts: list[str] = []
         for step in self._steps:
             if isinstance(step, list):
-                names = ", ".join(a.name for a in step)
-                parts.append(f"[{names}]")
+                item_strs: list[str] = []
+                for item in step:
+                    if isinstance(item, Flow):
+                        item_strs.append(f"({repr(item)[5:-1]})")
+                    else:
+                        item_strs.append(item.name)
+                parts.append(f"[{', '.join(item_strs)}]")
             else:
                 parts.append(step.name)
         return f"Flow({' >> '.join(parts)})"
@@ -106,10 +134,10 @@ def chain(*items: Agent | _ParallelGroup) -> Flow:
     if not items:
         raise SwarmError("chain() requires at least one agent")
 
-    steps: list[Agent | list[Agent]] = []
+    steps: list[Agent | list[Agent | Flow]] = []
     for item in items:
         if isinstance(item, _ParallelGroup):
-            steps.append(item.agents)
+            steps.append(item.items)
         elif isinstance(item, Agent):
             steps.append(item)
         else:
@@ -119,11 +147,13 @@ def chain(*items: Agent | _ParallelGroup) -> Flow:
     return Flow(steps)
 
 
-def parallel(*agents: Agent) -> _ParallelGroup:
-    """Group agents for concurrent execution within a :func:`chain`.
+def parallel(*items: Agent | Flow) -> _ParallelGroup:
+    """Group agents or sub-flows for concurrent execution within a :func:`chain`.
 
-    Requires at least two agents.
+    Requires at least two items.  Each item may be an :class:`Agent`
+    (run individually) or a :class:`Flow` (run its steps sequentially
+    within the concurrent group).
     """
-    if len(agents) < 2:
+    if len(items) < 2:
         raise SwarmError("parallel() requires at least 2 agents")
-    return _ParallelGroup(list(agents))
+    return _ParallelGroup(list(items))
