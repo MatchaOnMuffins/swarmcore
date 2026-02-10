@@ -75,16 +75,32 @@ Agents produce summaries via `<summary>` tags in their output. If omitted, the f
 `>>` for sequential, `|` for parallel:
 
 ```python
-planner >> writer                        # sequential
-(researcher | critic) >> writer          # parallel then sequential
+planner >> writer                           # sequential
+(researcher | critic) >> writer             # parallel then sequential
 planner >> (researcher | critic) >> writer  # mixed
 ```
 
-Or the functional API:
+Parallel groups can contain multi-step sub-flows. `>>` binds tighter than `|`, so sub-chains compose naturally:
+
+```python
+(researcher >> analyst) | (critic >> editor) >> writer
+```
+
+```
+researcher ──► analyst ──┐
+                         ├──► writer
+critic ──► editor ───────┘
+```
+
+Each branch runs its steps sequentially; branches run concurrently via `asyncio.gather`. Nesting is recursive — sub-flows can contain their own parallel groups.
+
+Functional API:
 
 ```python
 from swarmcore import chain, parallel
-Swarm(flow=chain(planner, parallel(researcher, critic), writer))
+
+chain(planner, parallel(researcher, critic), writer)
+chain(parallel(chain(researcher, analyst), chain(critic, editor)), writer)
 ```
 
 Parallel agents share the same context snapshot — they don't see each other's outputs.
