@@ -32,22 +32,38 @@ from typing import Any
 
 import litellm
 
+from ddgs import DDGS
+
 from swarmcore import Agent, Event, EventType, Hooks, Swarm
+
+# ── Tools ─────────────────────────────────────────────────────────
+
+
+def search_web(query: str) -> str:
+    """Search the web for current information.
+
+    query: The search query string
+    """
+    results = DDGS().text(query, max_results=5)
+    return "\n\n".join(f"**{r['title']}**\n{r['body']}\n{r['href']}" for r in results)
+
 
 # ── Agents ────────────────────────────────────────────────────────
 
-MODEL = "openai/gpt-4o-mini"
+MODEL = "openai/gpt-5.2"
 
 market_researcher = Agent(
     name="market_researcher",
     instructions=(
-        "You are a market research specialist. Analyze the target market "
-        "for the given product/initiative. Include: total addressable market "
-        "(TAM) with dollar figures, consumer demographic breakdown, top 3 "
-        "competitors with market share, and recent consumer behavior trends. "
-        "Use specific numbers and cite plausible sources."
+        "You are a market research specialist. Use search_web to find "
+        "current data on the target market for the given product/initiative. "
+        "Include: total addressable market (TAM) with dollar figures, "
+        "consumer demographic breakdown, top 3 competitors with market "
+        "share, and recent consumer behavior trends. "
+        "Cite your sources with specific numbers."
     ),
     model=MODEL,
+    tools=[search_web],
 )
 
 tech_analyst = Agent(
@@ -234,9 +250,7 @@ def _handle_event(event: Event) -> None:
 # ── Main ──────────────────────────────────────────────────────────
 
 flow = (
-    market_researcher
-    >> tech_analyst
-    >> financial_modeler
+    (market_researcher | tech_analyst | financial_modeler)
     >> risk_assessor
     >> strategist
     >> exec_briefer
@@ -288,8 +302,7 @@ async def main() -> None:
     _section("Context Pull Analysis")
     print()
     print(
-        f"  This section shows which agents pulled full context from which "
-        f"prior agents."
+        "  This section shows which agents pulled full context from which prior agents."
     )
     print(
         f"  {BOLD}Ideal behavior:{RESET} later agents should be selective, "

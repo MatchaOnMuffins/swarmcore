@@ -16,3 +16,4 @@ wheels/
 # Benchmark results
 benchmark/results/
 benchmark/
+demo/

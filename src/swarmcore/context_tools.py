@@ -52,12 +52,14 @@ def make_search_context_tool(ctx: SharedContext) -> Callable[[str], str]:
     """Create a ``search_context`` tool bound to the given context."""
 
     def search_context(query: str) -> str:
-        """Search across all prior agent outputs for lines matching a query.
+        """Search across all prior agent outputs for lines matching a pattern.
 
-        Uses regex matching; falls back to substring if the regex is invalid.
-        Returns matching lines grouped by agent name.
+        Returns matching lines grouped by agent name.  The query is a regex
+        pattern, but simple keywords work too (e.g. "revenue", "TAM",
+        "\\$[0-9]+" for dollar amounts).  Use "|" to combine terms:
+        "TAM|market size|addressable".
 
-        query: A regex pattern or substring to search for
+        query: Regex pattern or keyword to search for (case-sensitive)
         """
         results = ctx.search(query)
         if not results:

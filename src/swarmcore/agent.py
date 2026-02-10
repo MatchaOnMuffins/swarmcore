@@ -154,9 +154,15 @@ class Agent:
         if structured_output:
             system_content += (
                 "\n\n# Output format\n"
-                "Begin your response with a 2-3 sentence executive summary "
-                "wrapped in <summary>...</summary> tags, then provide your "
-                "full detailed response below the tags."
+                "Wrap the first part of your response in "
+                "<summary>...</summary> tags — a concise 2-3 sentence "
+                "overview of your key findings or conclusions. Downstream "
+                "agents see *only* this summary unless they explicitly "
+                "request your full output, so make it informative.\n"
+                "\n"
+                "<summary>Your concise summary here.</summary>\n"
+                "\n"
+                "Your full detailed response here."
             )
 
         messages: list[dict[str, Any]] = [

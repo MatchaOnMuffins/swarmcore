@@ -211,7 +211,7 @@ async def test_structured_output_instruction_injected(mock_llm: AsyncMock):
     call_kwargs = mock_llm.call_args
     system_msg = call_kwargs.kwargs["messages"][0]["content"]
     assert "<summary>" in system_msg
-    assert "executive summary" in system_msg
+    assert "Downstream agents" in system_msg
 
 
 async def test_structured_output_not_injected_by_default(mock_llm: AsyncMock):
