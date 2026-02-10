@@ -252,13 +252,47 @@ class Agent:
                 messages.append(msg_dict)
 
                 for tool_call in message.tool_calls:
-                    fn_name = tool_call.function.name
-                    fn_args = json.loads(tool_call.function.arguments)
+                    fn_name = tool_call.function.name or "unknown"
+
+                    try:
+                        fn_args = json.loads(tool_call.function.arguments)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        error_str = f"Error: invalid arguments JSON: {e}"
+                        tool_call_records.append(
+                            ToolCallRecord(
+                                tool_name=fn_name,
+                                arguments={},
+                                result=error_str,
+                                duration_seconds=0.0,
+                            )
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": error_str,
+                            }
+                        )
+                        continue
 
                     if fn_name not in run_tools:
-                        raise AgentError(
-                            self.name, f"Model called unknown tool: {fn_name}"
+                        error_str = f"Error: unknown tool '{fn_name}'"
+                        tool_call_records.append(
+                            ToolCallRecord(
+                                tool_name=fn_name,
+                                arguments=fn_args,
+                                result=error_str,
+                                duration_seconds=0.0,
+                            )
                         )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": error_str,
+                            }
+                        )
+                        continue
 
                     if hooks and hooks.is_active:
                         await hooks.emit(
@@ -273,12 +307,15 @@ class Agent:
                         )
 
                     tool_start = time.monotonic()
-                    result = run_tools[fn_name](**fn_args)
-                    if inspect.isawaitable(result):
-                        result = await result
+                    try:
+                        result = run_tools[fn_name](**fn_args)
+                        if inspect.isawaitable(result):
+                            result = await result
+                        result_str = str(result)
+                    except Exception as e:
+                        result_str = f"Error: tool '{fn_name}' failed: {e}"
                     tool_duration = round(time.monotonic() - tool_start, 3)
 
-                    result_str = str(result)
                     tool_record = ToolCallRecord(
                         tool_name=fn_name,
                         arguments=fn_args,

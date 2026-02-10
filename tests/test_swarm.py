@@ -291,19 +291,28 @@ async def test_expand_tool_injected_when_summaries_exist(mock_llm: AsyncMock):
 
 
 async def test_expand_tool_not_injected_on_first_step(mock_llm: AsyncMock):
-    """First agent has no prior context, so no expand tool should be available."""
+    """First agent has no prior context, so no expand tool should be available.
+
+    The LLM hallucinates expand_context, gets an error, then recovers.
+    """
     tool_call = MagicMock()
     tool_call.id = "call_bad"
     tool_call.function.name = "expand_context"
     tool_call.function.arguments = '{"agent_name": "nobody"}'
 
-    mock_llm.return_value = make_mock_response(content=None, tool_calls=[tool_call])
+    mock_llm.side_effect = [
+        make_mock_response(content=None, tool_calls=[tool_call]),
+        make_mock_response(content="A output after recovery."),
+    ]
 
     a = Agent(name="a", instructions="Do A.")
     swarm = Swarm(flow=chain(a), context_mode="push")
 
-    with pytest.raises(Exception, match="unknown tool"):
-        await swarm.run("Task")
+    result = await swarm.run("Task")
+    assert result.output == "A output after recovery."
+    a_result = result.history[0]
+    assert a_result.tool_call_count == 1
+    assert "Error: unknown tool" in a_result.tool_calls[0].result
 
 
 async def test_expand_tool_not_injected_when_all_expanded(mock_llm: AsyncMock):

@@ -12,3 +12,6 @@ wheels/
 .pytest_cache/
 
 .ruff_cache/
+
+# Benchmark results
+benchmark/results/

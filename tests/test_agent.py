@@ -145,19 +145,26 @@ async def test_agent_async_tool(mock_llm: AsyncMock):
     assert result.tool_calls[0].tool_name == "async_lookup"
 
 
-async def test_agent_unknown_tool_raises(mock_llm: AsyncMock):
+async def test_agent_unknown_tool_returns_error_to_llm(mock_llm: AsyncMock):
+    """Unknown tool calls send an error message back to the LLM instead of raising."""
     tool_call = MagicMock()
     tool_call.id = "call_789"
     tool_call.function.name = "nonexistent_tool"
     tool_call.function.arguments = "{}"
 
-    mock_llm.return_value = make_mock_response(content=None, tool_calls=[tool_call])
+    mock_llm.side_effect = [
+        make_mock_response(content=None, tool_calls=[tool_call]),
+        make_mock_response(content="Sorry, I couldn't find that tool."),
+    ]
 
     agent = Agent(name="bad_agent", instructions="Do stuff.")
     ctx = SharedContext()
 
-    with pytest.raises(AgentError, match="unknown tool"):
-        await agent.run("Do something", ctx)
+    result = await agent.run("Do something", ctx)
+
+    assert result.output == "Sorry, I couldn't find that tool."
+    assert result.tool_call_count == 1
+    assert "Error: unknown tool" in result.tool_calls[0].result
 
 
 async def test_agent_llm_error_raises(mock_llm: AsyncMock):
@@ -277,13 +284,97 @@ async def test_extra_tools_do_not_persist(mock_llm: AsyncMock):
     # First run with extra tool
     await agent.run("Go", ctx, extra_tools=[ephemeral])
 
-    # Second run without — LLM tries to call it, should raise
+    # Second run without — LLM tries to call it, should get error result (not raise)
     tool_call = MagicMock()
     tool_call.id = "call_leak"
     tool_call.function.name = "ephemeral"
     tool_call.function.arguments = '{"x": "hi"}'
 
-    mock_llm.return_value = make_mock_response(content=None, tool_calls=[tool_call])
+    mock_llm.side_effect = [
+        make_mock_response(content=None, tool_calls=[tool_call]),
+        make_mock_response(content="Tool not available."),
+    ]
 
-    with pytest.raises(AgentError, match="unknown tool"):
-        await agent.run("Go again", ctx)
+    result = await agent.run("Go again", ctx)
+    assert result.output == "Tool not available."
+    assert "Error: unknown tool" in result.tool_calls[0].result
+
+
+async def test_agent_tool_invalid_json_args(mock_llm: AsyncMock):
+    """Malformed JSON in tool arguments sends an error back to the LLM."""
+
+    def my_tool(x: str) -> str:
+        """A tool."""
+        return x
+
+    tool_call = MagicMock()
+    tool_call.id = "call_bad_json"
+    tool_call.function.name = "my_tool"
+    tool_call.function.arguments = "NOT VALID JSON"
+
+    mock_llm.side_effect = [
+        make_mock_response(content=None, tool_calls=[tool_call]),
+        make_mock_response(content="I'll try a different approach."),
+    ]
+
+    agent = Agent(name="test", instructions="Hi.", tools=[my_tool])
+    ctx = SharedContext()
+
+    result = await agent.run("Go", ctx)
+
+    assert result.output == "I'll try a different approach."
+    assert result.tool_call_count == 1
+    assert "Error: invalid arguments JSON" in result.tool_calls[0].result
+
+
+async def test_agent_tool_execution_error(mock_llm: AsyncMock):
+    """Tool that raises an exception sends the error back to the LLM."""
+
+    def failing_tool(x: str) -> str:
+        """A tool that fails."""
+        raise ValueError("something broke")
+
+    tool_call = MagicMock()
+    tool_call.id = "call_fail"
+    tool_call.function.name = "failing_tool"
+    tool_call.function.arguments = '{"x": "test"}'
+
+    mock_llm.side_effect = [
+        make_mock_response(content=None, tool_calls=[tool_call]),
+        make_mock_response(content="The tool failed, but I can handle it."),
+    ]
+
+    agent = Agent(name="test", instructions="Hi.", tools=[failing_tool])
+    ctx = SharedContext()
+
+    result = await agent.run("Go", ctx)
+
+    assert result.output == "The tool failed, but I can handle it."
+    assert result.tool_call_count == 1
+    assert "Error: tool 'failing_tool' failed: something broke" in result.tool_calls[0].result
+
+
+async def test_agent_async_tool_execution_error(mock_llm: AsyncMock):
+    """Async tool that raises an exception sends the error back to the LLM."""
+
+    async def async_failing(x: str) -> str:
+        """An async tool that fails."""
+        raise RuntimeError("async failure")
+
+    tool_call = MagicMock()
+    tool_call.id = "call_async_fail"
+    tool_call.function.name = "async_failing"
+    tool_call.function.arguments = '{"x": "test"}'
+
+    mock_llm.side_effect = [
+        make_mock_response(content=None, tool_calls=[tool_call]),
+        make_mock_response(content="Recovered from async failure."),
+    ]
+
+    agent = Agent(name="test", instructions="Hi.", tools=[async_failing])
+    ctx = SharedContext()
+
+    result = await agent.run("Go", ctx)
+
+    assert result.output == "Recovered from async failure."
+    assert "Error: tool 'async_failing' failed: async failure" in result.tool_calls[0].result
