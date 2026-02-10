@@ -38,6 +38,21 @@ Key risks are (a) **portion estimation accuracy** (single-photo volume inference
 
 </details>
 
+## Quickstart
+
+```python
+import asyncio
+from swarmcore import Agent, Swarm
+
+researcher = Agent(name="researcher", instructions="Research the topic.", model="anthropic/claude-sonnet-4-20250514")
+writer = Agent(name="writer", instructions="Write a report from the research.", model="anthropic/claude-sonnet-4-20250514")
+
+result = asyncio.run(Swarm(flow=researcher >> writer).run("AI agent trends in 2025"))
+print(result.output)
+```
+
+`researcher` runs first. Its output is stored in shared context, which `writer` receives automatically.
+
 ## Context management
 
 Each agent in a flow receives context from prior steps automatically:
@@ -54,21 +69,6 @@ agent_10 sees: agents 1-8 [SUMMARIES] + agent_9 [FULL]
 ```
 
 Agents produce summaries via `<summary>` tags in their output. If omitted, the full output is used as both summary and detail.
-
-## Quickstart
-
-```python
-import asyncio
-from swarmcore import Agent, Swarm
-
-researcher = Agent(name="researcher", instructions="Research the topic.", model="anthropic/claude-sonnet-4-20250514")
-writer = Agent(name="writer", instructions="Write a report from the research.", model="anthropic/claude-sonnet-4-20250514")
-
-result = asyncio.run(Swarm(flow=researcher >> writer).run("AI agent trends in 2025"))
-print(result.output)
-```
-
-`researcher` runs first. Its output is stored in shared context, which `writer` receives automatically.
 
 ## Flows
 
