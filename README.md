@@ -1,12 +1,10 @@
 # SwarmCore
 
-Coordinate AI agents in a workflow. `pip install swarmcore`.
+Scalable AI agent coordination. Compose agents into sequential and parallel flows with automatic context management that stays lean as the swarm grows.
 
 <p align="center">
   <img src="assets/core_flow.gif" alt="SwarmCore flow demo" />
 </p>
-
-## Install
 
 ```bash
 pip install swarmcore
@@ -18,159 +16,99 @@ pip install swarmcore
 import asyncio
 from swarmcore import Agent, Swarm
 
-researcher = Agent(
-    name="researcher",
-    instructions="Find key information about the given topic. Write detailed notes.",
-    model="anthropic/claude-opus-4-6",
-)
+researcher = Agent(name="researcher", instructions="Research the topic.", model="anthropic/claude-sonnet-4-20250514")
+writer = Agent(name="writer", instructions="Write a report from the research.", model="anthropic/claude-sonnet-4-20250514")
 
-writer = Agent(
-    name="writer",
-    instructions="Using the research notes in context, write a clear summary report.",
-    model="anthropic/claude-opus-4-6",
-)
-
-swarm = Swarm(flow=researcher >> writer)
-
-result = asyncio.run(swarm.run("What are the key trends in AI agents in 2025?"))
+result = asyncio.run(Swarm(flow=researcher >> writer).run("AI agent trends in 2025"))
 print(result.output)
 ```
 
-The researcher runs first. Its output is stored in shared context. The writer runs next and sees the research notes in its prompt. `result.output` is the writer's final response.
+The researcher runs first, its output goes into shared context, and the writer sees it automatically.
 
 ## Tiered Context
 
-As agents chain together, every prior agent's full output would normally be injected into downstream system prompts, growing linearly. SwarmCore solves this automatically:
+Most multi-agent frameworks dump every prior agent's full output into the next prompt. That blows up at scale. SwarmCore keeps it tight:
 
-- Each agent produces a **summary** (via `<summary>` tags) and a **full output**
-- Downstream agents see **full output** from the immediately preceding step and **summaries** from everything earlier
-- When a summary isn't enough, agents can call the **`expand_context` tool** to retrieve any prior agent's full output on demand
+- **Immediately preceding step** → full output
+- **Everything earlier** → summaries only
+- **Need more?** → agents call `expand_context` at runtime to pull any prior agent's full output
 
 ```
-researcher >> analyst >> critic >> writer
+agent_1 >> agent_2 >> ... >> agent_10
 
-analyst sees:  researcher [FULL]
-critic sees:   researcher [SUMMARY] + analyst [FULL]
-writer sees:   researcher [SUMMARY] + analyst [SUMMARY] + critic [FULL]
-               (can call expand_context("researcher") to get full output)
+agent_10 sees: agents 1-8 [SUMMARIES] + agent_9 [FULL]
+               (can expand any earlier agent on demand)
 ```
 
-The `expand_context` tool is injected automatically whenever summarized context exists, and agents are prompted to use it — no manual instruction needed. Agents decide at runtime whether a summary is sufficient or if they need the full output.
-
-```python
-swarm = Swarm(flow=researcher >> analyst >> critic >> writer)
-result = asyncio.run(swarm.run("AI trends in 2025"))
-
-# Each result carries both the full output and its summary
-for r in result.history:
-    print(f"{r.agent_name}: {len(r.output)} chars, summary: {len(r.summary)} chars")
-```
-
-No configuration needed. If an agent's response doesn't include `<summary>` tags, the full output is used instead.
+The tool and prompt hint are injected automatically. Agents produce summaries via `<summary>` tags in their output — if omitted, the full output is used instead.
 
 ## Flows
 
-Compose agents with `>>` (sequential) and `|` (parallel):
+`>>` for sequential, `|` for parallel:
 
 ```python
-# Sequential: planner runs, then writer
-swarm = Swarm(flow=planner >> writer)
-
-# Parallel: researcher and critic run concurrently
-swarm = Swarm(flow=(researcher | critic) >> writer)
-
-# Mixed: planner, then researcher+critic in parallel, then writer
-swarm = Swarm(flow=planner >> (researcher | critic) >> writer)
+planner >> writer                        # sequential
+(researcher | critic) >> writer          # parallel then sequential
+planner >> (researcher | critic) >> writer  # mixed
 ```
 
-Or use the functional API:
+Or the functional API:
 
 ```python
 from swarmcore import chain, parallel
-
-swarm = Swarm(flow=chain(planner, parallel(researcher, critic), writer))
+Swarm(flow=chain(planner, parallel(researcher, critic), writer))
 ```
 
-All parallel agents see the same context snapshot from before their step. They don't see each other's outputs during execution.
+Parallel agents share the same context snapshot — they don't see each other's outputs.
 
 ## Tools
 
-Give agents tools as plain Python functions:
+Plain Python functions:
 
 ```python
 def search_web(query: str) -> str:
     """Search the web for information."""
-    # your implementation
     return results
 
-agent = Agent(
-    name="researcher",
-    instructions="Use the search tool to find information.",
-    model="anthropic/claude-opus-4-6",
-    tools=[search_web],
-)
+agent = Agent(name="researcher", instructions="...", tools=[search_web])
 ```
 
-Functions are automatically converted to OpenAI function-calling schemas using type hints and docstrings. The agent will call tools in a loop until it produces a final text response.
-
-Async functions work too:
-
-```python
-async def fetch_data(url: str) -> str:
-    """Fetch data from a URL."""
-    ...
-```
+Type hints and docstrings are converted to tool schemas automatically. Sync and async functions both work.
 
 ## Models
 
-SwarmCore uses [LiteLLM](https://docs.litellm.ai/) under the hood. Any LiteLLM-compatible model string works:
+Any [LiteLLM](https://docs.litellm.ai/)-compatible model:
 
 ```python
-Agent(name="a", instructions="...", model="anthropic/claude-opus-4-6")
+Agent(name="a", instructions="...", model="anthropic/claude-sonnet-4-20250514")
 Agent(name="b", instructions="...", model="openai/gpt-4o")
 Agent(name="c", instructions="...", model="ollama/llama3")
 Agent(name="d", instructions="...", model="groq/llama-3.1-8b-instant")
 ```
 
-Set the appropriate API key for your provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc).
+## API
 
-## API Reference
-
-### `Agent(name, instructions, model, tools)`
+### `Agent(name, instructions, model, tools=None)`
 
 | Param | Type | Default | Description |
 |---|---|---|---|
-| `name` | `str` | required | Unique identifier used in context keys |
-| `instructions` | `str` | required | System prompt for this agent |
-| `model` | `str` | `"anthropic/claude-opus-4-6"` | LiteLLM model string |
-| `tools` | `list[Callable]` | `None` | Python functions for tool calling |
-
-Supports `>>` (sequential) and `|` (parallel) operators for composing flows.
+| `name` | `str` | required | Identifier used in context keys |
+| `instructions` | `str` | required | System prompt |
+| `model` | `str` | `"anthropic/claude-sonnet-4-20250514"` | LiteLLM model string |
+| `tools` | `list[Callable]` | `None` | Tool functions |
 
 ### `Swarm(flow)`
 
 | Param | Type | Description |
 |---|---|---|
-| `flow` | `Flow` | Execution plan built via operators or `chain()`/`parallel()` |
-
-### `chain(*agents_or_groups)` / `parallel(*agents)`
-
-```python
-from swarmcore import chain, parallel
-
-# Functional flow construction
-flow = chain(a, parallel(b, c), d)
-swarm = Swarm(flow=flow)
-```
-
-`parallel()` requires at least 2 agents.
+| `flow` | `Flow` | Execution plan from operators or `chain()`/`parallel()` |
 
 ### `SwarmResult`
 
 | Field | Type | Description |
 |---|---|---|
 | `output` | `str` | Final agent's output |
-| `context` | `dict[str, str]` | All agent outputs keyed by agent name |
+| `context` | `dict[str, str]` | All outputs keyed by agent name |
 | `history` | `list[AgentResult]` | Ordered execution results |
 
 ### `AgentResult`
@@ -178,20 +116,11 @@ swarm = Swarm(flow=flow)
 | Field | Type | Description |
 |---|---|---|
 | `agent_name` | `str` | Agent that produced this result |
-| `input_task` | `str` | The task string passed to the agent |
-| `output` | `str` | Agent's text output (summary tags stripped) |
-| `summary` | `str` | Short summary extracted from `<summary>` tags, or full output if none |
+| `output` | `str` | Text output (summary tags stripped) |
+| `summary` | `str` | Summary from `<summary>` tags, or full output |
 | `model` | `str` | Model used |
-| `duration_seconds` | `float` | Execution time |
-| `token_usage` | `TokenUsage` | Token counts (prompt, completion, total) |
-
-## Roadmap
-
-- Conditional branching in flows
-- Streaming responses
-- Retry policies
-- Agent memory / state persistence
-- Dynamic re-planning
+| `duration_seconds` | `float` | Wall-clock time |
+| `token_usage` | `TokenUsage` | Token counts |
 
 ## License
 
