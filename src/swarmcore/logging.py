@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
+from typing import Any
 
 from swarmcore.hooks import Event, EventType, Hooks
 
@@ -36,15 +38,25 @@ class LoggingHandler:
     def __init__(self) -> None:
         self._logger = logging.getLogger("swarmcore")
 
+    @staticmethod
+    def _as_extra(data: Any) -> dict[str, Any]:
+        """Convert event data to a dict suitable for logging ``extra``."""
+        if isinstance(data, dict):
+            return data
+        if dataclasses.is_dataclass(data) and not isinstance(data, type):
+            return dataclasses.asdict(data)
+        return {}
+
     def __call__(self, event: Event) -> None:
         event_name = event.type.value
+        extra = self._as_extra(event.data)
 
         if event.type in _ERROR_EVENTS:
-            self._logger.error("[%s] %s", event_name, event.data, extra=event.data)
+            self._logger.error("[%s] %s", event_name, event.data, extra=extra)
         elif event.type in _DEBUG_EVENTS:
-            self._logger.debug("[%s] %s", event_name, event.data, extra=event.data)
+            self._logger.debug("[%s] %s", event_name, event.data, extra=extra)
         else:
-            self._logger.info("[%s] %s", event_name, event.data, extra=event.data)
+            self._logger.info("[%s] %s", event_name, event.data, extra=extra)
 
 
 def enable_logging(level: int = logging.INFO) -> Hooks:

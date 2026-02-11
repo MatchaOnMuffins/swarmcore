@@ -10,7 +10,18 @@ from litellm.types.utils import Choices, ModelResponse, Usage
 
 from swarmcore.context import SharedContext
 from swarmcore.exceptions import AgentError
-from swarmcore.hooks import Event, EventType, Hooks
+from swarmcore.hooks import (
+    AgentEndData,
+    AgentErrorData,
+    AgentStartData,
+    Event,
+    EventType,
+    Hooks,
+    LLMCallEndData,
+    LLMCallStartData,
+    ToolCallEndData,
+    ToolCallStartData,
+)
 from swarmcore.models import AgentResult, LLMCallRecord, TokenUsage, ToolCallRecord
 
 if TYPE_CHECKING:
@@ -75,10 +86,16 @@ class Agent:
         instructions: str,
         model: str = "anthropic/claude-opus-4-6",
         tools: list[Callable[..., Any]] | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+        max_turns: int | None = None,
     ) -> None:
         self.name = name
         self.instructions = instructions
         self.model = model
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.max_turns = max_turns
 
         self._tools: dict[str, Callable[..., Any]] = {}
         self._tool_schemas: list[dict[str, Any]] = []
@@ -119,10 +136,13 @@ class Agent:
         expand: set[str] | None = None,
         extra_tools: list[Callable[..., Any]] | None = None,
         context_hint: str | None = None,
+        swarm_timeout: float | None = None,
+        swarm_max_retries: int | None = None,
     ) -> AgentResult:
         """Execute the agent on a task with shared context."""
         start = time.monotonic()
         total_usage = TokenUsage()
+        total_cost = 0.0
         llm_call_records: list[LLMCallRecord] = []
         tool_call_records: list[ToolCallRecord] = []
         call_index = 0
@@ -137,8 +157,14 @@ class Agent:
 
         if hooks and hooks.is_active:
             await hooks.emit(
-                Event(EventType.AGENT_START, {"agent": self.name, "task": task})
+                Event(EventType.AGENT_START, AgentStartData(agent=self.name, task=task))
             )
+
+        # Resolve effective timeout/max_retries: agent-level > swarm-level > litellm default
+        effective_timeout = self.timeout if self.timeout is not None else swarm_timeout
+        effective_max_retries = (
+            self.max_retries if self.max_retries is not None else swarm_max_retries
+        )
 
         system_content = self.instructions
         if context_hint is not None:
@@ -178,20 +204,38 @@ class Agent:
         }
         if run_schemas:
             kwargs["tools"] = run_schemas
+        if effective_timeout is not None:
+            kwargs["timeout"] = effective_timeout
+        if effective_max_retries is not None:
+            kwargs["max_retries"] = effective_max_retries
 
         try:
             while True:
+                if self.max_turns is not None and call_index >= self.max_turns:
+                    raise AgentError(
+                        self.name,
+                        f"Agent hit max_turns limit ({self.max_turns}) "
+                        "with no final response",
+                    )
+
                 if hooks and hooks.is_active:
                     await hooks.emit(
                         Event(
                             EventType.LLM_CALL_START,
-                            {"agent": self.name, "call_index": call_index},
+                            LLMCallStartData(agent=self.name, call_index=call_index),
                         )
                     )
 
                 llm_start = time.monotonic()
                 response = cast(ModelResponse, await litellm.acompletion(**kwargs))
                 llm_duration = round(time.monotonic() - llm_start, 3)
+
+                # Cost estimation (graceful degradation)
+                call_cost = 0.0
+                try:
+                    call_cost = litellm.completion_cost(completion_response=response)
+                except Exception:
+                    pass
 
                 usage = cast(Usage | None, getattr(response, "usage", None))
                 call_usage = TokenUsage()
@@ -202,6 +246,8 @@ class Agent:
                     total_usage.prompt_tokens += call_usage.prompt_tokens
                     total_usage.completion_tokens += call_usage.completion_tokens
                     total_usage.total_tokens += call_usage.total_tokens
+
+                total_cost += call_cost
 
                 choice = cast(Choices, response.choices[0])
                 message = choice.message
@@ -219,6 +265,7 @@ class Agent:
                     duration_seconds=llm_duration,
                     tool_calls_requested=tool_names_requested,
                     finish_reason=finish_reason,
+                    cost=call_cost,
                 )
                 llm_call_records.append(llm_record)
 
@@ -226,15 +273,15 @@ class Agent:
                     await hooks.emit(
                         Event(
                             EventType.LLM_CALL_END,
-                            {
-                                "agent": self.name,
-                                "call_index": call_index,
-                                "finish_reason": finish_reason,
-                                "duration_seconds": llm_duration,
-                                "prompt_tokens": call_usage.prompt_tokens,
-                                "completion_tokens": call_usage.completion_tokens,
-                                "total_tokens": call_usage.total_tokens,
-                            },
+                            LLMCallEndData(
+                                agent=self.name,
+                                call_index=call_index,
+                                finish_reason=finish_reason,
+                                duration_seconds=llm_duration,
+                                prompt_tokens=call_usage.prompt_tokens,
+                                completion_tokens=call_usage.completion_tokens,
+                                total_tokens=call_usage.total_tokens,
+                            ),
                         )
                     )
 
@@ -309,11 +356,11 @@ class Agent:
                         await hooks.emit(
                             Event(
                                 EventType.TOOL_CALL_START,
-                                {
-                                    "agent": self.name,
-                                    "tool": fn_name,
-                                    "arguments": fn_args,
-                                },
+                                ToolCallStartData(
+                                    agent=self.name,
+                                    tool=fn_name,
+                                    arguments=fn_args,
+                                ),
                             )
                         )
 
@@ -339,11 +386,11 @@ class Agent:
                         await hooks.emit(
                             Event(
                                 EventType.TOOL_CALL_END,
-                                {
-                                    "agent": self.name,
-                                    "tool": fn_name,
-                                    "duration_seconds": tool_duration,
-                                },
+                                ToolCallEndData(
+                                    agent=self.name,
+                                    tool=fn_name,
+                                    duration_seconds=tool_duration,
+                                ),
                             )
                         )
 
@@ -357,12 +404,12 @@ class Agent:
 
                 kwargs["messages"] = messages
 
-        except AgentError:
+        except AgentError as ae:
             if hooks and hooks.is_active:
                 await hooks.emit(
                     Event(
                         EventType.AGENT_ERROR,
-                        {"agent": self.name, "error": str(AgentError)},
+                        AgentErrorData(agent=self.name, error=str(ae)),
                     )
                 )
             raise
@@ -371,7 +418,7 @@ class Agent:
                 await hooks.emit(
                     Event(
                         EventType.AGENT_ERROR,
-                        {"agent": self.name, "error": str(e)},
+                        AgentErrorData(agent=self.name, error=str(e)),
                     )
                 )
             raise AgentError(self.name, str(e)) from e
@@ -389,16 +436,18 @@ class Agent:
             tool_calls=tool_call_records,
             llm_call_count=len(llm_call_records),
             tool_call_count=len(tool_call_records),
+            cost=total_cost,
         )
 
         if hooks and hooks.is_active:
             await hooks.emit(
                 Event(
                     EventType.AGENT_END,
-                    {
-                        "agent": self.name,
-                        "duration_seconds": agent_result.duration_seconds,
-                    },
+                    AgentEndData(
+                        agent=self.name,
+                        duration_seconds=agent_result.duration_seconds,
+                        cost=total_cost,
+                    ),
                 )
             )
 

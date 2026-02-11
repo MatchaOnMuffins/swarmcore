@@ -9,7 +9,15 @@ from swarmcore.agent import Agent
 from swarmcore.context import SharedContext
 from swarmcore.context_tools import make_context_tools
 from swarmcore.flow import Flow
-from swarmcore.hooks import Event, EventType, Hooks
+from swarmcore.hooks import (
+    Event,
+    EventType,
+    Hooks,
+    StepEndData,
+    StepStartData,
+    SwarmEndData,
+    SwarmStartData,
+)
 from swarmcore.models import AgentResult, SwarmResult, TokenUsage
 
 _SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
@@ -89,11 +97,15 @@ class Swarm:
         flow: Flow,
         hooks: Hooks | None = None,
         context_mode: Literal["push", "pull"] = "pull",
+        timeout: float | None = None,
+        max_retries: int | None = None,
     ) -> None:
         self._steps = flow.steps
         self._agents = {a.name: a for a in flow.agents}
         self._hooks = hooks
         self._context_mode = context_mode
+        self._timeout = timeout
+        self._max_retries = max_retries
 
     async def _run_agent_pull(
         self,
@@ -127,6 +139,8 @@ class Swarm:
             structured_output=True,
             extra_tools=extra_tools,
             context_hint=context_hint,
+            swarm_timeout=self._timeout,
+            swarm_max_retries=self._max_retries,
         )
         summary, detail = _parse_structured_output(result.output)
         result.output = detail
@@ -155,6 +169,8 @@ class Swarm:
             structured_output=True,
             expand=expand,
             extra_tools=extra_tools,
+            swarm_timeout=self._timeout,
+            swarm_max_retries=self._max_retries,
         )
         summary, detail = _parse_structured_output(result.output)
         result.output = detail
@@ -182,10 +198,14 @@ class Swarm:
                     for item in step:
                         if isinstance(item, Flow):
                             coros.append(
-                                self._run_subflow(item, task, context, hooks, expand_tool, sub_prev)
+                                self._run_subflow(
+                                    item, task, context, hooks, expand_tool, sub_prev
+                                )
                             )
                         else:
-                            coros.append(self._run_agent_pull(item, task, context, hooks))
+                            coros.append(
+                                self._run_agent_pull(item, task, context, hooks)
+                            )
                     gathered = await asyncio.gather(*coros)
                     current_names: set[str] = set()
                     for g in gathered:
@@ -208,11 +228,15 @@ class Swarm:
                     for item in step:
                         if isinstance(item, Flow):
                             coros.append(
-                                self._run_subflow(item, task, context, hooks, expand_tool, sub_prev)
+                                self._run_subflow(
+                                    item, task, context, hooks, expand_tool, sub_prev
+                                )
                             )
                         else:
                             coros.append(
-                                self._run_agent_push(item, task, context, hooks, expand, expand_tool)
+                                self._run_agent_push(
+                                    item, task, context, hooks, expand, expand_tool
+                                )
                             )
                     gathered = await asyncio.gather(*coros)
                     current_names = set()
@@ -245,7 +269,7 @@ class Swarm:
             await hooks.emit(
                 Event(
                     EventType.SWARM_START,
-                    {"task": task, "step_count": len(self._steps)},
+                    SwarmStartData(task=task, step_count=len(self._steps)),
                 )
             )
 
@@ -258,11 +282,11 @@ class Swarm:
                 await hooks.emit(
                     Event(
                         EventType.STEP_START,
-                        {
-                            "step_index": step_index,
-                            "agents": agent_names,
-                            "parallel": isinstance(step, list),
-                        },
+                        StepStartData(
+                            step_index=step_index,
+                            agents=agent_names,
+                            parallel=isinstance(step, list),
+                        ),
                     )
                 )
 
@@ -273,7 +297,12 @@ class Swarm:
                         if isinstance(item, Flow):
                             coros.append(
                                 self._run_subflow(
-                                    item, task, context, hooks, expand_tool, prev_step_names
+                                    item,
+                                    task,
+                                    context,
+                                    hooks,
+                                    expand_tool,
+                                    prev_step_names,
                                 )
                             )
                         else:
@@ -306,7 +335,12 @@ class Swarm:
                         if isinstance(item, Flow):
                             coros.append(
                                 self._run_subflow(
-                                    item, task, context, hooks, expand_tool, prev_step_names
+                                    item,
+                                    task,
+                                    context,
+                                    hooks,
+                                    expand_tool,
+                                    prev_step_names,
                                 )
                             )
                         else:
@@ -338,17 +372,19 @@ class Swarm:
                 await hooks.emit(
                     Event(
                         EventType.STEP_END,
-                        {"step_index": step_index},
+                        StepEndData(step_index=step_index),
                     )
                 )
 
         swarm_duration = round(time.monotonic() - swarm_start, 3)
 
         total_usage = TokenUsage()
+        total_cost = 0.0
         for agent_result in history:
             total_usage.prompt_tokens += agent_result.token_usage.prompt_tokens
             total_usage.completion_tokens += agent_result.token_usage.completion_tokens
             total_usage.total_tokens += agent_result.token_usage.total_tokens
+            total_cost += agent_result.cost
 
         swarm_result = SwarmResult(
             output=history[-1].output,
@@ -356,16 +392,18 @@ class Swarm:
             history=history,
             duration_seconds=swarm_duration,
             total_token_usage=total_usage,
+            total_cost=total_cost,
         )
 
         if hooks and hooks.is_active:
             await hooks.emit(
                 Event(
                     EventType.SWARM_END,
-                    {
-                        "duration_seconds": swarm_duration,
-                        "agent_count": len(history),
-                    },
+                    SwarmEndData(
+                        duration_seconds=swarm_duration,
+                        agent_count=len(history),
+                        total_cost=total_cost,
+                    ),
                 )
             )
 

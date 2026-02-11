@@ -351,7 +351,10 @@ async def test_agent_tool_execution_error(mock_llm: AsyncMock):
 
     assert result.output == "The tool failed, but I can handle it."
     assert result.tool_call_count == 1
-    assert "Error: tool 'failing_tool' failed: something broke" in result.tool_calls[0].result
+    assert (
+        "Error: tool 'failing_tool' failed: something broke"
+        in result.tool_calls[0].result
+    )
 
 
 async def test_agent_async_tool_execution_error(mock_llm: AsyncMock):
@@ -377,4 +380,7 @@ async def test_agent_async_tool_execution_error(mock_llm: AsyncMock):
     result = await agent.run("Go", ctx)
 
     assert result.output == "Recovered from async failure."
-    assert "Error: tool 'async_failing' failed: async failure" in result.tool_calls[0].result
+    assert (
+        "Error: tool 'async_failing' failed: async failure"
+        in result.tool_calls[0].result
+    )

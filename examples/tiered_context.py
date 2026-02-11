@@ -12,21 +12,7 @@ from __future__ import annotations
 import asyncio
 import textwrap
 
-from ddgs import DDGS
-
-from swarmcore import Agent, Event, EventType, Hooks, Swarm
-
-# ── Tools ─────────────────────────────────────────────────────────
-
-
-def search_web(query: str) -> str:
-    """Search the web for current information.
-
-    query: The search query string
-    """
-    results = DDGS().text(query, max_results=5)
-    return "\n\n".join(f"**{r['title']}**\n{r['body']}\n{r['href']}" for r in results)
-
+from swarmcore import Agent, Swarm, console_hooks, search_web
 
 # ── Agents ────────────────────────────────────────────────────────
 
@@ -112,51 +98,7 @@ exec_briefer = Agent(
     model=MODEL,
 )
 
-# ── Formatting helpers ────────────────────────────────────────────
-
-G, Y, R, DIM, BOLD, RST = (
-    "\033[92m", "\033[93m", "\033[91m", "\033[2m", "\033[1m", "\033[0m"
-)
-
-
-def _section(title: str) -> None:
-    print(f"\n{BOLD}{'─' * 70}\n  {title}\n{'─' * 70}{RST}")
-
-
-def _indent(text: str, prefix: str = "  │ ") -> str:
-    return textwrap.indent(text.strip(), prefix)
-
-
-# ── Hook handler ─────────────────────────────────────────────────
-
-
-def _handle_event(event: Event) -> None:
-    d = event.data
-    match event.type:
-        case EventType.STEP_START:
-            agents = d["agents"]
-            par = d.get("parallel", False)
-            label = (" | ".join(agents) if par else agents[0])
-            _section(f"Step {d['step_index'] + 1}: {label}{' (parallel)' if par else ''}")
-        case EventType.AGENT_START:
-            print(f"\n  {BOLD}▶ {d['agent']}{RST}")
-        case EventType.LLM_CALL_START:
-            print(f"  {DIM}LLM call {d['call_index']}...{RST}", end="", flush=True)
-        case EventType.LLM_CALL_END:
-            tc = f" → {Y}tool_calls{RST}" if d.get("finish_reason") == "tool_calls" else ""
-            print(f" {d['duration_seconds']}s, {d['total_tokens']} tok{tc}")
-        case EventType.TOOL_CALL_START:
-            args = ", ".join(f'{k}="{v}"' for k, v in d.get("arguments", {}).items())
-            print(f"  │ {R}⚡ {d['tool']}({args}){RST}")
-        case EventType.TOOL_CALL_END:
-            print(f"  │   {DIM}→ returned ({d['duration_seconds']}s){RST}")
-        case EventType.AGENT_END:
-            print(f"  {G}✓ {d['agent']} done ({d['duration_seconds']}s){RST}")
-        case EventType.AGENT_ERROR:
-            print(f"  {R}✗ {d.get('agent', '?')} error: {d.get('error')}{RST}")
-
-
-# ── Main ──────────────────────────────────────────────────────────
+# ── Pipeline ─────────────────────────────────────────────────────
 
 flow = (
     (market_researcher | tech_analyst | financial_modeler)
@@ -165,50 +107,27 @@ flow = (
     >> exec_briefer
 )
 
-hooks = Hooks()
-hooks.on_all(_handle_event)
-swarm = Swarm(flow=flow, hooks=hooks, context_mode="pull")
+swarm = Swarm(
+    flow=flow,
+    hooks=console_hooks(verbose=True),
+    timeout=60.0,
+    max_retries=3,
+)
 
 TASK = (
-    "Evaluate the opportunity for launching an AI-powered personal "
-    "nutrition coach app that uses computer vision to analyze meals "
-    "and provides real-time dietary recommendations. Target market: "
-    "health-conscious millennials in the US."
+    "How have different robotics applications historically used different "
+    "forms of kalman filters? What are the impacts of those different forms "
+    "and when do you select them? Is it more like the complexity of your "
+    "localization model, or is it based on your individual sensor inputs?"
 )
 
 
 async def main() -> None:
-    print(f"\n{BOLD}Task:{RST} {TASK}\n")
     result = await swarm.run(TASK)
 
-    # ── Context pull analysis ─────────────────────────────────────
-    _section("Context Pull Analysis")
-    for r in result.history:
-        pulls = [tc.arguments.get("agent_name", "?")
-                 for tc in r.tool_calls if tc.tool_name == "get_context"]
-        if not pulls:
-            continue
-        prior = [h.agent_name for h in result.history
-                 if h.agent_name != r.agent_name
-                 and result.history.index(h) < result.history.index(r)]
-        tag = "SELECTIVE ✓" if len(pulls) < len(prior) else "PULLED ALL ⚠"
-        skipped = [a for a in prior if a not in pulls]
-        print(f"  {r.agent_name:18s}  {len(pulls)}/{len(prior)} pulled  {tag}")
-        if skipped:
-            print(f"  {'':18s}  {DIM}skipped: {', '.join(skipped)}{RST}")
+    result.print_summary()
 
-    # ── Token usage ───────────────────────────────────────────────
-    _section("Token Usage")
-    for r in result.history:
-        print(f"  {r.agent_name:18s}  {r.token_usage.total_tokens:>5d} tok  "
-              f"{r.llm_call_count} calls  {r.tool_call_count} tools  {r.duration_seconds}s")
-    print(f"\n  {'TOTAL':18s}  {result.total_token_usage.total_tokens:>5d} tok  "
-          f"{result.duration_seconds}s")
-
-    # ── Final output ──────────────────────────────────────────────
-    _section("Final Output")
-    print(_indent(result.output.strip(), "  "))
-    print()
+    print(textwrap.indent(result.output.strip(), "  "))
 
 
 if __name__ == "__main__":

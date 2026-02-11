@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
@@ -26,10 +27,133 @@ class EventType(Enum):
     TOOL_CALL_END = "tool_call_end"
 
 
+# ---------------------------------------------------------------------------
+# Typed event data classes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _EventDataBase:
+    """Base for typed event data with dict-like backward compatibility."""
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Dict-compatible `.get()` — delegates to `getattr`."""
+        return getattr(self, key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        """Dict-compatible `[]` access — raises `KeyError` on miss."""
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key) from None
+
+    def __iter__(self):  # type: ignore[override]
+        """Iterate over field names (dict-key protocol for logging `extra=`)."""
+        return iter(f.name for f in dataclasses.fields(self))
+
+    def __contains__(self, key: str) -> bool:
+        """Support `key in data` checks."""
+        return hasattr(self, key) and key in {f.name for f in dataclasses.fields(self)}
+
+    def items(self) -> list[tuple[str, Any]]:
+        """Return all fields as `(key, value)` pairs."""
+        return list(dataclasses.asdict(self).items())
+
+
+@dataclass
+class SwarmStartData(_EventDataBase):
+    task: str
+    step_count: int
+
+
+@dataclass
+class SwarmEndData(_EventDataBase):
+    duration_seconds: float
+    agent_count: int
+    total_cost: float = 0.0
+
+
+@dataclass
+class StepStartData(_EventDataBase):
+    step_index: int
+    agents: list[str]
+    parallel: bool
+
+
+@dataclass
+class StepEndData(_EventDataBase):
+    step_index: int
+
+
+@dataclass
+class AgentStartData(_EventDataBase):
+    agent: str
+    task: str
+
+
+@dataclass
+class AgentEndData(_EventDataBase):
+    agent: str
+    duration_seconds: float
+    cost: float = 0.0
+
+
+@dataclass
+class AgentErrorData(_EventDataBase):
+    agent: str
+    error: str
+
+
+@dataclass
+class LLMCallStartData(_EventDataBase):
+    agent: str
+    call_index: int
+
+
+@dataclass
+class LLMCallEndData(_EventDataBase):
+    agent: str
+    call_index: int
+    finish_reason: str
+    duration_seconds: float
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+@dataclass
+class ToolCallStartData(_EventDataBase):
+    agent: str
+    tool: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class ToolCallEndData(_EventDataBase):
+    agent: str
+    tool: str
+    duration_seconds: float
+
+
+EventData = (
+    SwarmStartData
+    | SwarmEndData
+    | StepStartData
+    | StepEndData
+    | AgentStartData
+    | AgentEndData
+    | AgentErrorData
+    | LLMCallStartData
+    | LLMCallEndData
+    | ToolCallStartData
+    | ToolCallEndData
+)
+
+
 @dataclass
 class Event:
     type: EventType
-    data: dict[str, Any] = field(default_factory=dict)
+    data: EventData | dict[str, Any] = field(default_factory=dict)
 
 
 class Hooks:

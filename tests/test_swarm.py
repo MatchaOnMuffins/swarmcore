@@ -676,11 +676,17 @@ async def test_nested_token_accumulation(mock_llm: AsyncMock):
     async def route(**kwargs):
         system = kwargs["messages"][0]["content"]
         if "Do A." in system:
-            return make_mock_response(content="A output", prompt_tokens=5, completion_tokens=10)
+            return make_mock_response(
+                content="A output", prompt_tokens=5, completion_tokens=10
+            )
         if "Do B." in system:
-            return make_mock_response(content="B output", prompt_tokens=8, completion_tokens=12)
+            return make_mock_response(
+                content="B output", prompt_tokens=8, completion_tokens=12
+            )
         if "Do C." in system:
-            return make_mock_response(content="C output", prompt_tokens=3, completion_tokens=7)
+            return make_mock_response(
+                content="C output", prompt_tokens=3, completion_tokens=7
+            )
         return make_mock_response(content="Unknown")
 
     mock_llm.side_effect = route
