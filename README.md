@@ -7,7 +7,7 @@
 Multi-agent orchestration for Python. Compose AI agents into sequential and parallel flows with automatic context sharing.
 
 <p align="center">
-  <img src="assets/core_flow.gif" alt="SwarmCore flow demo" />
+  <img src="https://raw.githubusercontent.com/MatchaOnMuffins/swarmcore/refs/heads/main/assets/core_flow.gif" alt="SwarmCore flow demo" />
 </p>
 
 ## Installation
