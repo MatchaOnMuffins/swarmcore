@@ -99,6 +99,7 @@ class Swarm:
         context_mode: Literal["push", "pull"] = "pull",
         timeout: float | None = None,
         max_retries: int | None = None,
+        context_budget: int | None = None,
     ) -> None:
         self._steps = flow.steps
         self._agents = {a.name: a for a in flow.agents}
@@ -106,6 +107,7 @@ class Swarm:
         self._context_mode = context_mode
         self._timeout = timeout
         self._max_retries = max_retries
+        self._context_budget = context_budget
 
     async def _run_agent_pull(
         self,
@@ -132,6 +134,13 @@ class Swarm:
             earlier_entries = [
                 (n, s, f, c) for n, s, f, c in entries if n not in prev_names
             ]
+
+            # Budget check: if prev-step outputs exceed budget, demote to pull
+            if self._context_budget is not None and prev_entries:
+                total_prev_chars = sum(c for _, _, _, c in prev_entries)
+                if total_prev_chars > self._context_budget:
+                    earlier_entries = prev_entries + earlier_entries
+                    prev_entries = []
 
             hint_parts: list[str] = []
 
@@ -183,6 +192,12 @@ class Swarm:
         expand_tool: Callable[[str], str],
     ) -> AgentResult:
         """Run a single agent in push mode, handling expand tool and output parsing."""
+        # Budget check: if expanded outputs exceed budget, demote all to summaries
+        if self._context_budget is not None and expand:
+            total_expand_chars = sum(len(context.get(name) or "") for name in expand)
+            if total_expand_chars > self._context_budget:
+                expand = set()
+
         context_keys = set(context.to_dict().keys())
         summarized = context_keys - (expand or set())
         extra_tools = [expand_tool] if summarized else None
