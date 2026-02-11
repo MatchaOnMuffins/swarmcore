@@ -754,6 +754,48 @@ async def test_parallel_final_step_pull_mode(mock_llm: AsyncMock):
     assert "## beta" in result.output
 
 
+async def test_parallel_final_step_no_duplicate_from_earlier_step(mock_llm: AsyncMock):
+    """Agent reused across steps should only appear once in final merged output.
+
+    Regression: chain(a, parallel(a, b)) should NOT include the first step's
+    output for 'a' in the merged output — only the parallel step's result.
+    """
+    mock_llm.side_effect = [
+        make_mock_response(content="A step-1 output"),
+        make_mock_response(content="A step-2 output"),
+        make_mock_response(content="B output"),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=chain(a, parallel(a, b)), context_mode="pull")
+    result = await swarm.run("Test task")
+
+    assert "A step-2 output" in result.output
+    assert "B output" in result.output
+    assert "A step-1 output" not in result.output
+
+
+async def test_parallel_final_step_no_duplicate_push_mode(mock_llm: AsyncMock):
+    """Same duplicate-prevention check in push mode."""
+    mock_llm.side_effect = [
+        make_mock_response(content="A step-1 output"),
+        make_mock_response(content="A step-2 output"),
+        make_mock_response(content="B output"),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=chain(a, parallel(a, b)), context_mode="push")
+    result = await swarm.run("Test task")
+
+    assert "A step-2 output" in result.output
+    assert "B output" in result.output
+    assert "A step-1 output" not in result.output
+
+
 async def test_sequential_final_step_unchanged(mock_llm: AsyncMock):
     """Sequential final step still returns only the last agent's output."""
     mock_llm.side_effect = [

@@ -305,7 +305,9 @@ class Swarm:
         prev_step_names: set[str] = set()
         expand_tool = _make_expand_tool(context)
 
+        step_history_start = 0
         for step_index, step in enumerate(self._steps):
+            step_history_start = len(history)
             if hooks and hooks.is_active:
                 agent_names = _collect_agent_names(step)
                 await hooks.emit(
@@ -419,11 +421,13 @@ class Swarm:
             total_usage.total_tokens += agent_result.token_usage.total_tokens
             total_cost += agent_result.cost
 
-        # When the final step is a parallel group, combine all final agents' outputs
+        # When the final step is a parallel group, combine all final agents' outputs.
+        # Only consider results from the final step to avoid duplicating outputs
+        # from earlier steps that share an agent name (e.g. chain(a, parallel(a, b))).
         if len(prev_step_names) > 1:
             final_outputs = [
                 f"## {r.agent_name}\n{r.output}"
-                for r in history
+                for r in history[step_history_start:]
                 if r.agent_name in prev_step_names
             ]
             output = "\n\n".join(final_outputs)
