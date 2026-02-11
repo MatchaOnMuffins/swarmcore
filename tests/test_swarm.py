@@ -412,12 +412,8 @@ async def test_pull_mode_pushes_prev_step_full_output(mock_llm: AsyncMock):
 async def test_pull_mode_three_step_hybrid(mock_llm: AsyncMock):
     """A >> B >> C: C gets B's full output pushed, A available via pull tools."""
     mock_llm.side_effect = [
-        make_mock_response(
-            content="<summary>A summary.</summary>\nA detailed output."
-        ),
-        make_mock_response(
-            content="<summary>B summary.</summary>\nB detailed output."
-        ),
+        make_mock_response(content="<summary>A summary.</summary>\nA detailed output."),
+        make_mock_response(content="<summary>B summary.</summary>\nB detailed output."),
         make_mock_response(content="C output."),
     ]
 
@@ -732,3 +728,163 @@ async def test_pull_mode_default(mock_llm: AsyncMock):
     # A's full output should be in B's system prompt
     b_system = b_call.kwargs["messages"][0]["content"]
     assert "A output." in b_system
+
+
+# --- Context budget tests ---
+
+
+async def test_pull_mode_context_budget_exceeded_demotes_to_pull(mock_llm: AsyncMock):
+    """When prev-step outputs exceed context_budget, they're demoted to summaries + pull tools."""
+    mock_llm.side_effect = [
+        make_mock_response(content="<summary>A sum.</summary>\n" + "A" * 5000),
+        make_mock_response(content="<summary>B sum.</summary>\n" + "B" * 5000),
+        make_mock_response(content="C output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+
+    # Budget of 100 chars — both A and B full outputs (~5000 chars each) will exceed it
+    swarm = Swarm(
+        flow=chain(parallel(a, b), c),
+        context_mode="pull",
+        context_budget=100,
+    )
+    result = await swarm.run("Task")
+
+    assert result.output == "C output."
+
+    # C's system prompt should NOT contain full outputs from A or B
+    c_call = mock_llm.call_args_list[2]
+    c_system = c_call.kwargs["messages"][0]["content"]
+    assert "AAAAA" not in c_system
+    assert "BBBBB" not in c_system
+
+    # C should have summaries instead
+    assert "A sum." in c_system
+    assert "B sum." in c_system
+
+    # C should have pull tools injected
+    tools = c_call.kwargs.get("tools", [])
+    tool_names = {t["function"]["name"] for t in tools}
+    assert "get_context" in tool_names
+    assert "list_context" in tool_names
+    assert "search_context" in tool_names
+
+
+async def test_pull_mode_context_budget_not_exceeded_pushes_full(mock_llm: AsyncMock):
+    """When prev-step outputs are within budget, they're pushed normally."""
+    mock_llm.side_effect = [
+        make_mock_response(content="<summary>A sum.</summary>\nA detail."),
+        make_mock_response(content="B output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    # Budget of 100000 chars — A's output (~10 chars) is well within budget
+    swarm = Swarm(
+        flow=a >> b,
+        context_mode="pull",
+        context_budget=100000,
+    )
+    await swarm.run("Task")
+
+    # B should get A's full output pushed (budget not exceeded)
+    b_call = mock_llm.call_args_list[1]
+    b_system = b_call.kwargs["messages"][0]["content"]
+    assert "A detail." in b_system
+
+    # B should NOT have pull tools (no earlier entries, prev is pushed)
+    tools = b_call.kwargs.get("tools", [])
+    tool_names = {t["function"]["name"] for t in tools}
+    assert "get_context" not in tool_names
+
+
+async def test_pull_mode_no_budget_preserves_behavior(mock_llm: AsyncMock):
+    """When context_budget is None (default), all prev-step outputs are pushed."""
+    mock_llm.side_effect = [
+        make_mock_response(content="A" * 100000),
+        make_mock_response(content="B" * 100000),
+        make_mock_response(content="C output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+
+    # No budget set — all prev outputs are pushed regardless of size
+    swarm = Swarm(
+        flow=chain(parallel(a, b), c),
+        context_mode="pull",
+    )
+    await swarm.run("Task")
+
+    # C should have full outputs from A and B pushed
+    c_call = mock_llm.call_args_list[2]
+    c_system = c_call.kwargs["messages"][0]["content"]
+    assert "AAAAA" in c_system
+    assert "BBBBB" in c_system
+
+
+async def test_push_mode_context_budget_exceeded_demotes_to_summaries(
+    mock_llm: AsyncMock,
+):
+    """Push mode: when expanded outputs exceed budget, everything shows summaries."""
+    mock_llm.side_effect = [
+        make_mock_response(content="<summary>A sum.</summary>\n" + "A" * 5000),
+        make_mock_response(content="<summary>B sum.</summary>\n" + "B" * 5000),
+        make_mock_response(content="C output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+
+    swarm = Swarm(
+        flow=chain(parallel(a, b), c),
+        context_mode="push",
+        context_budget=100,
+    )
+    result = await swarm.run("Task")
+
+    assert result.output == "C output."
+
+    # C's system prompt should NOT contain full outputs
+    c_call = mock_llm.call_args_list[2]
+    c_system = c_call.kwargs["messages"][0]["content"]
+    assert "AAAAA" not in c_system
+    assert "BBBBB" not in c_system
+
+    # C should have summaries
+    assert "A sum." in c_system or "a (summary)" in c_system.lower()
+    assert "B sum." in c_system or "b (summary)" in c_system.lower()
+
+    # C should have expand_context tool injected
+    tools = c_call.kwargs.get("tools", [])
+    tool_names = {t["function"]["name"] for t in tools}
+    assert "expand_context" in tool_names
+
+
+async def test_push_mode_context_budget_not_exceeded_expands(mock_llm: AsyncMock):
+    """Push mode: when expanded outputs are within budget, they're shown in full."""
+    mock_llm.side_effect = [
+        make_mock_response(content="<summary>A sum.</summary>\nA detail."),
+        make_mock_response(content="B output."),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(
+        flow=a >> b,
+        context_mode="push",
+        context_budget=100000,
+    )
+    await swarm.run("Task")
+
+    # B should have A's full output (budget not exceeded)
+    b_call = mock_llm.call_args_list[1]
+    b_system = b_call.kwargs["messages"][0]["content"]
+    assert "A detail." in b_system
