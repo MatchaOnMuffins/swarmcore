@@ -13,7 +13,7 @@ import textwrap
 
 from swarmcore import Swarm, analyst, console_hooks, editor, researcher, writer
 
-flow = researcher() >> (analyst() | writer(model=)) >> editor()
+flow = researcher() >> (analyst() | writer()) >> editor()
 
 swarm = Swarm(
     flow=flow, hooks=console_hooks(verbose=True), timeout=600.0, max_retries=3
