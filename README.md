@@ -42,16 +42,62 @@ Key risks are (a) **portion estimation accuracy** (single-photo volume inference
 
 ```python
 import asyncio
-from swarmcore import Agent, Swarm
+from swarmcore import Swarm, researcher, writer
 
-researcher = Agent(name="researcher", instructions="Research the topic.", model="anthropic/claude-sonnet-4-20250514")
-writer = Agent(name="writer", instructions="Write a report from the research.", model="anthropic/claude-sonnet-4-20250514")
-
-result = asyncio.run(Swarm(flow=researcher >> writer).run("AI agent trends in 2025"))
+result = asyncio.run(Swarm(flow=researcher() >> writer()).run("AI agent trends in 2025"))
 print(result.output)
 ```
 
-`researcher` runs first. Its output is stored in shared context, which `writer` receives automatically.
+`researcher` runs first (with web search). Its output is stored in shared context, which `writer` receives automatically.
+
+Or build agents from scratch:
+
+```python
+from swarmcore import Agent, Swarm
+
+r = Agent(name="researcher", instructions="Research the topic.", model="anthropic/claude-opus-4-6")
+w = Agent(name="writer", instructions="Write a report from the research.", model="anthropic/claude-opus-4-6")
+
+result = asyncio.run(Swarm(flow=r >> w).run("AI agent trends in 2025"))
+```
+
+## Agent factories
+
+Pre-built factories for common roles. Zero-config defaults for prototyping, full override for production.
+
+```python
+from swarmcore import researcher, analyst, writer, editor, summarizer
+```
+
+| Factory | Default tools | Role |
+|---|---|---|
+| `researcher()` | `search_web` | Gathers information, finds data and sources |
+| `analyst()` | — | Analyzes data, identifies insights and trends |
+| `writer()` | — | Drafts structured content from context |
+| `editor()` | — | Polishes and synthesizes multiple inputs |
+| `summarizer()` | — | Condenses into an executive-level brief |
+
+Every parameter is optional and keyword-only:
+
+```python
+# Zero-config
+researcher()
+
+# Fine-tuned
+researcher(
+    name="market_researcher",
+    model="openai/gpt-4o",
+    instructions="Focus on TAM and competitive landscape.",
+    tools=[my_custom_search],   # replaces default search_web
+    timeout=30.0,
+)
+```
+
+Compose them into pipelines directly:
+
+```python
+flow = researcher() >> (analyst() | writer()) >> editor()
+```
 
 ## Context management
 
@@ -122,7 +168,7 @@ agent = Agent(name="researcher", instructions="...", tools=[search_web])
 Any [LiteLLM](https://docs.litellm.ai/)-compatible model:
 
 ```python
-Agent(name="a", instructions="...", model="anthropic/claude-sonnet-4-20250514")
+Agent(name="a", instructions="...", model="anthropic/claude-opus-4-6")
 Agent(name="b", instructions="...", model="openai/gpt-4o")
 Agent(name="c", instructions="...", model="ollama/llama3")
 Agent(name="d", instructions="...", model="groq/llama-3.1-8b-instant")
@@ -130,20 +176,26 @@ Agent(name="d", instructions="...", model="groq/llama-3.1-8b-instant")
 
 ## API
 
-### `Agent(name, instructions, model, tools=None)`
+### `Agent(name, instructions, model, tools=None, timeout=None, max_retries=None, max_turns=None)`
 
 | Param | Type | Default | Description |
 |---|---|---|---|
 | `name` | `str` | required | Identifier used in context keys |
 | `instructions` | `str` | required | System prompt |
-| `model` | `str` | `"anthropic/claude-sonnet-4-20250514"` | LiteLLM model string |
+| `model` | `str` | `"anthropic/claude-opus-4-6"` | LiteLLM model string |
 | `tools` | `list[Callable]` | `None` | Tool functions |
+| `timeout` | `float \| None` | `None` | Per-agent LLM call timeout in seconds |
+| `max_retries` | `int \| None` | `None` | Per-agent LLM retry count |
+| `max_turns` | `int \| None` | `None` | Max tool-calling loop iterations |
 
-### `Swarm(flow)`
+### `Swarm(flow, hooks=None, timeout=None, max_retries=None)`
 
 | Param | Type | Description |
 |---|---|---|
 | `flow` | `Flow` | Execution plan from operators or `chain()`/`parallel()` |
+| `hooks` | `Hooks \| None` | Event hooks (e.g. `console_hooks()`) |
+| `timeout` | `float \| None` | Default timeout for all agents |
+| `max_retries` | `int \| None` | Default retry count for all agents |
 
 ### `SwarmResult`
 

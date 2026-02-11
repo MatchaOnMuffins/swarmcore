@@ -27,10 +27,7 @@ def test_search_web_returns_formatted_results():
 
     mock_ddgs_cls = MagicMock(return_value=mock_ddgs_instance)
 
-    with patch.dict(
-        "sys.modules", {"duckduckgo_search": MagicMock(DDGS=mock_ddgs_cls)}
-    ):
-        # Re-import to pick up the patched module
+    with patch.dict("sys.modules", {"ddgs": MagicMock(DDGS=mock_ddgs_cls)}):
         from importlib import reload
 
         import swarmcore.tools
@@ -57,9 +54,7 @@ def test_search_web_forwards_max_results():
 
     mock_ddgs_cls = MagicMock(return_value=mock_ddgs_instance)
 
-    with patch.dict(
-        "sys.modules", {"duckduckgo_search": MagicMock(DDGS=mock_ddgs_cls)}
-    ):
+    with patch.dict("sys.modules", {"ddgs": MagicMock(DDGS=mock_ddgs_cls)}):
         from importlib import reload
 
         import swarmcore.tools
@@ -79,12 +74,11 @@ def test_search_web_import_error():
     )
 
     def mock_import(name, *args, **kwargs):
-        if name == "duckduckgo_search":
-            raise ImportError("No module named 'duckduckgo_search'")
+        if name in ("ddgs", "duckduckgo_search"):
+            raise ImportError(f"No module named '{name}'")
         return original_import(name, *args, **kwargs)
 
     with patch("builtins.__import__", side_effect=mock_import):
-        # Need to reload to trigger the lazy import path fresh
         from importlib import reload
 
         import swarmcore.tools
@@ -92,10 +86,8 @@ def test_search_web_import_error():
         reload(swarmcore.tools)
         result = swarmcore.tools.search_web("test query")
 
-    assert result == (
-        "Error: duckduckgo-search is not installed. "
-        "Install it with: pip install duckduckgo-search"
-    )
+    assert "ddgs is not installed" in result
+    assert "pip install ddgs" in result
 
 
 # --- empty results ---
@@ -107,9 +99,7 @@ def test_search_web_empty_results():
 
     mock_ddgs_cls = MagicMock(return_value=mock_ddgs_instance)
 
-    with patch.dict(
-        "sys.modules", {"duckduckgo_search": MagicMock(DDGS=mock_ddgs_cls)}
-    ):
+    with patch.dict("sys.modules", {"ddgs": MagicMock(DDGS=mock_ddgs_cls)}):
         from importlib import reload
 
         import swarmcore.tools

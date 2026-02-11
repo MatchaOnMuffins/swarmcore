@@ -13,9 +13,11 @@ import textwrap
 
 from swarmcore import Swarm, analyst, console_hooks, editor, researcher, writer
 
-flow = researcher() >> (analyst() | writer()) >> editor()
+flow = researcher() >> (analyst() | writer(model=)) >> editor()
 
-swarm = Swarm(flow=flow, hooks=console_hooks(verbose=True), timeout=60.0, max_retries=3)
+swarm = Swarm(
+    flow=flow, hooks=console_hooks(verbose=True), timeout=600.0, max_retries=3
+)
 
 TASK = (
     "How have different robotics applications historically used different "

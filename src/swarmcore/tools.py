@@ -8,12 +8,12 @@ def search_web(query: str, max_results: int = 5) -> str:
     max_results: Maximum number of results to return (default 5)
     """
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
     except ImportError:
-        return (
-            "Error: duckduckgo-search is not installed. "
-            "Install it with: pip install duckduckgo-search"
-        )
+        try:
+            from duckduckgo_search import DDGS
+        except ImportError:
+            return "Error: ddgs is not installed. Install it with: pip install ddgs"
 
     results = DDGS().text(query, max_results=max_results)
 
