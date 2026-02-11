@@ -710,6 +710,66 @@ async def test_nested_token_accumulation(mock_llm: AsyncMock):
     assert result.total_token_usage.total_tokens == 45
 
 
+async def test_parallel_final_step_combines_outputs(mock_llm: AsyncMock):
+    """When a parallel group is the final step, result.output includes all agents."""
+    mock_llm.side_effect = [
+        make_mock_response(content="Agent A output"),
+        make_mock_response(content="Agent B output"),
+        make_mock_response(content="Agent C output"),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
+
+    swarm = Swarm(flow=chain(parallel(a, b, c)), context_mode="push")
+    result = await swarm.run("Test task")
+
+    # All three agents' outputs should appear in result.output
+    assert "Agent A output" in result.output
+    assert "Agent B output" in result.output
+    assert "Agent C output" in result.output
+    # Each section should be headed with the agent name
+    assert "## a" in result.output
+    assert "## b" in result.output
+    assert "## c" in result.output
+
+
+async def test_parallel_final_step_pull_mode(mock_llm: AsyncMock):
+    """Parallel final step combines outputs in pull mode too."""
+    mock_llm.side_effect = [
+        make_mock_response(content="Alpha output"),
+        make_mock_response(content="Beta output"),
+    ]
+
+    alpha = Agent(name="alpha", instructions="Do Alpha.")
+    beta = Agent(name="beta", instructions="Do Beta.")
+
+    swarm = Swarm(flow=chain(parallel(alpha, beta)), context_mode="pull")
+    result = await swarm.run("Test task")
+
+    assert "Alpha output" in result.output
+    assert "Beta output" in result.output
+    assert "## alpha" in result.output
+    assert "## beta" in result.output
+
+
+async def test_sequential_final_step_unchanged(mock_llm: AsyncMock):
+    """Sequential final step still returns only the last agent's output."""
+    mock_llm.side_effect = [
+        make_mock_response(content="First output"),
+        make_mock_response(content="Final output"),
+    ]
+
+    a = Agent(name="a", instructions="Do A.")
+    b = Agent(name="b", instructions="Do B.")
+
+    swarm = Swarm(flow=a >> b, context_mode="push")
+    result = await swarm.run("Test task")
+
+    assert result.output == "Final output"
+
+
 async def test_pull_mode_default(mock_llm: AsyncMock):
     """Default context_mode should be pull with prev-step pushing."""
     mock_llm.side_effect = [

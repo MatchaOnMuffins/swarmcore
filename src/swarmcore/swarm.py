@@ -419,8 +419,19 @@ class Swarm:
             total_usage.total_tokens += agent_result.token_usage.total_tokens
             total_cost += agent_result.cost
 
+        # When the final step is a parallel group, combine all final agents' outputs
+        if len(prev_step_names) > 1:
+            final_outputs = [
+                f"## {r.agent_name}\n{r.output}"
+                for r in history
+                if r.agent_name in prev_step_names
+            ]
+            output = "\n\n".join(final_outputs)
+        else:
+            output = history[-1].output
+
         swarm_result = SwarmResult(
-            output=history[-1].output,
+            output=output,
             context=context.to_dict(),
             history=history,
             duration_seconds=swarm_duration,
