@@ -20,3 +20,4 @@ demo/
 docs/
 .DS_Store
 demo.py
+.worktrees/
