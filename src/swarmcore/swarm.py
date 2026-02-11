@@ -113,21 +113,46 @@ class Swarm:
         task: str,
         context: SharedContext,
         hooks: Hooks | None,
+        prev_step_names: set[str] | None = None,
     ) -> AgentResult:
-        """Run a single agent in pull mode, handling context tools and output parsing."""
+        """Run a single agent in pull mode, handling context tools and output parsing.
+
+        The immediately preceding step's full output is pushed directly into the
+        system prompt (no tool call needed).  Earlier agents are available via
+        lightweight summaries and pull tools (``list_context``, ``get_context``,
+        ``search_context``).
+        """
         has_context = bool(context.keys())
         if has_context:
-            pull_tools = make_context_tools(context)
-            hint_lines = [
-                "Prior agent outputs are available. Use the "
-                "`list_context`, `get_context`, and `search_context` "
-                "tools to retrieve them as needed.",
-                "",
+            prev_names = prev_step_names or set()
+            entries = context.entries()
+
+            # Split: previous-step outputs get pushed, earlier ones stay as pull
+            prev_entries = [(n, s, f, c) for n, s, f, c in entries if n in prev_names]
+            earlier_entries = [
+                (n, s, f, c) for n, s, f, c in entries if n not in prev_names
             ]
-            for name, summary, _full, _count in context.entries():
-                hint_lines.append(f"- **{name}**: {summary}")
-            context_hint: str | None = "\n".join(hint_lines)
-            extra_tools = pull_tools
+
+            hint_parts: list[str] = []
+
+            # Push full output from immediately preceding agents
+            for name, _summary, full, _count in prev_entries:
+                hint_parts.append(f"## {name}\n{full}")
+
+            # Summaries + pull tools for earlier agents
+            if earlier_entries:
+                hint_parts.append(
+                    "\nEarlier agent outputs are also available. Use the "
+                    "`list_context`, `get_context`, and `search_context` "
+                    "tools to retrieve them as needed.\n"
+                )
+                for name, summary, _full, _count in earlier_entries:
+                    hint_parts.append(f"- **{name}**: {summary}")
+
+            context_hint: str | None = "\n".join(hint_parts) if hint_parts else None
+
+            # Only inject pull tools when there are earlier entries to pull from
+            extra_tools = make_context_tools(context) if earlier_entries else None
         else:
             context_hint = None
             extra_tools = None
@@ -204,7 +229,9 @@ class Swarm:
                             )
                         else:
                             coros.append(
-                                self._run_agent_pull(item, task, context, hooks)
+                                self._run_agent_pull(
+                                    item, task, context, hooks, sub_prev
+                                )
                             )
                     gathered = await asyncio.gather(*coros)
                     current_names: set[str] = set()
@@ -218,7 +245,9 @@ class Swarm:
                             current_names.add(g.agent_name)
                     sub_prev = current_names
                 else:
-                    result = await self._run_agent_pull(step, task, context, hooks)
+                    result = await self._run_agent_pull(
+                        step, task, context, hooks, sub_prev
+                    )
                     results.append(result)
                     sub_prev = {result.agent_name}
             else:
@@ -307,7 +336,9 @@ class Swarm:
                             )
                         else:
                             coros.append(
-                                self._run_agent_pull(item, task, context, hooks)
+                                self._run_agent_pull(
+                                    item, task, context, hooks, prev_step_names
+                                )
                             )
                     gathered = await asyncio.gather(*coros)
 
@@ -322,7 +353,9 @@ class Swarm:
                             current_step_names.add(g.agent_name)
                     prev_step_names = current_step_names
                 else:
-                    result = await self._run_agent_pull(step, task, context, hooks)
+                    result = await self._run_agent_pull(
+                        step, task, context, hooks, prev_step_names
+                    )
                     history.append(result)
                     prev_step_names = {result.agent_name}
             else:

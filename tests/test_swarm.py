@@ -363,8 +363,8 @@ async def test_expand_tool_not_injected_when_all_expanded(mock_llm: AsyncMock):
 # --- Pull-mode tests ---
 
 
-async def test_pull_mode_injects_context_tools(mock_llm: AsyncMock):
-    """In pull mode, second agent gets context tools instead of expand_context."""
+async def test_pull_mode_prev_step_pushed_no_tools(mock_llm: AsyncMock):
+    """In pull mode A >> B, B gets A's full output pushed — no pull tools needed."""
     mock_llm.side_effect = [
         make_mock_response(content="A output."),
         make_mock_response(content="B output."),
@@ -376,18 +376,18 @@ async def test_pull_mode_injects_context_tools(mock_llm: AsyncMock):
     swarm = Swarm(flow=a >> b, context_mode="pull")
     await swarm.run("Task")
 
-    # B's call should have pull-mode context tools
+    # B's call should NOT have any context tools (A is immediately preceding)
     b_call = mock_llm.call_args_list[1]
     tools = b_call.kwargs.get("tools", [])
     tool_names = {t["function"]["name"] for t in tools}
-    assert "list_context" in tool_names
-    assert "get_context" in tool_names
-    assert "search_context" in tool_names
+    assert "list_context" not in tool_names
+    assert "get_context" not in tool_names
+    assert "search_context" not in tool_names
     assert "expand_context" not in tool_names
 
 
-async def test_pull_mode_no_full_context_in_system_prompt(mock_llm: AsyncMock):
-    """Pull mode should NOT inject full detail into system prompt — only summary."""
+async def test_pull_mode_pushes_prev_step_full_output(mock_llm: AsyncMock):
+    """Pull mode pushes immediately preceding agent's full output into prompt."""
     mock_llm.side_effect = [
         make_mock_response(
             content="<summary>A short summary.</summary>\nDetailed research output with many words."
@@ -403,36 +403,42 @@ async def test_pull_mode_no_full_context_in_system_prompt(mock_llm: AsyncMock):
 
     b_call = mock_llm.call_args_list[1]
     b_system = b_call.kwargs["messages"][0]["content"]
-    # Should NOT contain the full detail text
-    assert "Detailed research output with many words." not in b_system
-    # Should contain the summary
-    assert "A short summary." in b_system
-    # Should contain the agent name as a hint
+    # Should contain A's full detail (pushed, not pulled)
+    assert "Detailed research output with many words." in b_system
+    # Should contain the agent name
     assert "a" in b_system
-    # Should contain instructions about context tools
-    assert "list_context" in b_system or "get_context" in b_system
 
 
-async def test_pull_mode_includes_lightweight_hint(mock_llm: AsyncMock):
-    """Pull mode hint includes agent names and summaries."""
+async def test_pull_mode_three_step_hybrid(mock_llm: AsyncMock):
+    """A >> B >> C: C gets B's full output pushed, A available via pull tools."""
     mock_llm.side_effect = [
         make_mock_response(
-            content="<summary>Research summary.</summary>\nFull research."
+            content="<summary>A summary.</summary>\nA detailed output."
         ),
-        make_mock_response(content="B output."),
+        make_mock_response(
+            content="<summary>B summary.</summary>\nB detailed output."
+        ),
+        make_mock_response(content="C output."),
     ]
 
     a = Agent(name="a", instructions="Do A.")
     b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
 
-    swarm = Swarm(flow=a >> b, context_mode="pull")
+    swarm = Swarm(flow=a >> b >> c, context_mode="pull")
     await swarm.run("Task")
 
-    b_call = mock_llm.call_args_list[1]
-    b_system = b_call.kwargs["messages"][0]["content"]
-    assert "Available context" in b_system
-    assert "a" in b_system
-    assert "Research summary." in b_system
+    c_call = mock_llm.call_args_list[2]
+    c_system = c_call.kwargs["messages"][0]["content"]
+    # C should have B's full output pushed
+    assert "B detailed output." in c_system
+    # C should NOT have A's full output (only summary via pull tools)
+    assert "A detailed output." not in c_system
+    assert "A summary." in c_system
+    # C should have pull tools for earlier agent A
+    tools = c_call.kwargs.get("tools", [])
+    tool_names = {t["function"]["name"] for t in tools}
+    assert "get_context" in tool_names
 
 
 async def test_pull_mode_first_agent_no_context_tools(mock_llm: AsyncMock):
@@ -458,8 +464,8 @@ async def test_pull_mode_first_agent_no_context_tools(mock_llm: AsyncMock):
         assert "search_context" not in tool_names
 
 
-async def test_pull_mode_agent_calls_get_context(mock_llm: AsyncMock):
-    """Agent in pull mode can call get_context to retrieve prior output."""
+async def test_pull_mode_agent_calls_get_context_for_earlier(mock_llm: AsyncMock):
+    """A >> B >> C: C can call get_context to retrieve earlier agent A's full output."""
     tool_call = MagicMock()
     tool_call.id = "call_get"
     tool_call.function.name = "get_context"
@@ -467,24 +473,26 @@ async def test_pull_mode_agent_calls_get_context(mock_llm: AsyncMock):
 
     mock_llm.side_effect = [
         make_mock_response(content="A detailed output."),
-        # B first calls get_context, then produces final output
+        make_mock_response(content="B output."),
+        # C first calls get_context for earlier agent A, then produces final output
         make_mock_response(content=None, tool_calls=[tool_call]),
-        make_mock_response(content="B output using A's data."),
+        make_mock_response(content="C output using A's data."),
     ]
 
     a = Agent(name="a", instructions="Do A.")
     b = Agent(name="b", instructions="Do B.")
+    c = Agent(name="c", instructions="Do C.")
 
-    swarm = Swarm(flow=a >> b, context_mode="pull")
+    swarm = Swarm(flow=a >> b >> c, context_mode="pull")
     result = await swarm.run("Task")
 
-    assert result.output == "B output using A's data."
+    assert result.output == "C output using A's data."
 
-    # B should have recorded a tool call for get_context
-    b_result = result.history[1]
-    assert b_result.tool_call_count == 1
-    assert b_result.tool_calls[0].tool_name == "get_context"
-    assert "A detailed output." in b_result.tool_calls[0].result
+    # C should have recorded a tool call for get_context
+    c_result = result.history[2]
+    assert c_result.tool_call_count == 1
+    assert c_result.tool_calls[0].tool_name == "get_context"
+    assert "A detailed output." in c_result.tool_calls[0].result
 
 
 async def test_pull_mode_summary_parsing_works(mock_llm: AsyncMock):
@@ -505,7 +513,7 @@ async def test_pull_mode_summary_parsing_works(mock_llm: AsyncMock):
 
 
 async def test_pull_mode_parallel_step(mock_llm: AsyncMock):
-    """Pull mode works with parallel steps."""
+    """Pull mode works with parallel steps — prev step output is pushed."""
     mock_llm.side_effect = [
         make_mock_response(content="A output."),
         make_mock_response(content="B output."),
@@ -523,11 +531,10 @@ async def test_pull_mode_parallel_step(mock_llm: AsyncMock):
     assert result.context["b"] == "B output."
     assert result.context["c"] == "C output."
 
-    # B and C should have context tools
+    # B and C both get A's full output pushed (A is the prev step)
     for call in mock_llm.call_args_list[1:]:
-        tools = call.kwargs.get("tools", [])
-        tool_names = {t["function"]["name"] for t in tools}
-        assert "get_context" in tool_names
+        system = call.kwargs["messages"][0]["content"]
+        assert "A output." in system
 
 
 # --- Nested sub-flow execution tests ---
@@ -704,7 +711,7 @@ async def test_nested_token_accumulation(mock_llm: AsyncMock):
 
 
 async def test_pull_mode_default(mock_llm: AsyncMock):
-    """Default context_mode should be pull."""
+    """Default context_mode should be pull with prev-step pushing."""
     mock_llm.side_effect = [
         make_mock_response(content="A output."),
         make_mock_response(content="B output."),
@@ -716,9 +723,12 @@ async def test_pull_mode_default(mock_llm: AsyncMock):
     swarm = Swarm(flow=a >> b)
     await swarm.run("Task")
 
-    # Should behave as pull mode: second agent gets context tools
+    # Should behave as pull mode: A's output pushed to B (no tools needed)
     b_call = mock_llm.call_args_list[1]
     tools = b_call.kwargs.get("tools", [])
     tool_names = {t["function"]["name"] for t in tools}
-    assert "get_context" in tool_names
+    assert "get_context" not in tool_names
     assert "expand_context" not in tool_names
+    # A's full output should be in B's system prompt
+    b_system = b_call.kwargs["messages"][0]["content"]
+    assert "A output." in b_system

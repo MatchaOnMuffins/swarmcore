@@ -19,3 +19,4 @@ benchmark/
 demo/
 docs/
 .DS_Store
+demo.py
