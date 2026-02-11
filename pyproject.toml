@@ -1,6 +1,6 @@
 [project]
 name = "swarmcore"
-version = "0.2.1"
+version = "0.3.0"
 description = "Coordinate AI agents in a workflow"
 readme = "README.md"
 authors = [
@@ -13,6 +13,14 @@ dependencies = [
     "pydantic>=2.0",
 ]
 license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
 
 [project.optional-dependencies]
 dev = [
