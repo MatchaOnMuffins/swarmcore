@@ -21,6 +21,7 @@ class EventType(Enum):
     AGENT_START = "agent_start"
     AGENT_END = "agent_end"
     AGENT_ERROR = "agent_error"
+    AGENT_RETRY = "agent_retry"
     LLM_CALL_START = "llm_call_start"
     LLM_CALL_END = "llm_call_end"
     TOOL_CALL_START = "tool_call_start"
@@ -105,6 +106,15 @@ class AgentErrorData(_EventDataBase):
 
 
 @dataclass
+class AgentRetryData(_EventDataBase):
+    agent: str
+    attempt: int
+    max_retries: int
+    error: str
+    delay: float
+
+
+@dataclass
 class LLMCallStartData(_EventDataBase):
     agent: str
     call_index: int
@@ -143,6 +153,7 @@ EventData = (
     | AgentStartData
     | AgentEndData
     | AgentErrorData
+    | AgentRetryData
     | LLMCallStartData
     | LLMCallEndData
     | ToolCallStartData

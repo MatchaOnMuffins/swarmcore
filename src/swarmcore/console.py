@@ -150,6 +150,28 @@ class ConsoleReporter:
                         "✓ " + name + " done (" + str(dur) + "s)" + cost_suffix
                     )
                 )
+            case EventType.AGENT_RETRY:
+                name = d.get("agent", "?")
+                attempt = d.get("attempt", "?")
+                max_r = d.get("max_retries", "?")
+                err = d.get("error", "unknown")
+                delay = d.get("delay", "?")
+                self._print(
+                    "  "
+                    + self._yellow(
+                        "⟳ "
+                        + name
+                        + " retry "
+                        + str(attempt)
+                        + "/"
+                        + str(max_r)
+                        + " ("
+                        + str(err)
+                        + ") — waiting "
+                        + str(delay)
+                        + "s"
+                    )
+                )
             case EventType.AGENT_ERROR:
                 name = d.get("agent", "?")
                 err = d.get("error", "unknown")

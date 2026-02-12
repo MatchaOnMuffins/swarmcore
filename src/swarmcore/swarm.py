@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Callable, Literal
+from typing import Awaitable, Callable, Literal, TypeVar
 
 from swarmcore.agent import Agent
 from swarmcore.context import SharedContext
 from swarmcore.context_tools import make_context_tools
 from swarmcore.flow import Flow
+from swarmcore.exceptions import AgentError
 from swarmcore.hooks import (
+    AgentRetryData,
     Event,
     EventType,
     Hooks,
@@ -19,6 +21,8 @@ from swarmcore.hooks import (
     SwarmStartData,
 )
 from swarmcore.models import AgentResult, SwarmResult, TokenUsage
+
+_T = TypeVar("_T")
 
 _SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
 
@@ -100,6 +104,9 @@ class Swarm:
         timeout: float | None = None,
         max_retries: int | None = None,
         context_budget: int | None = None,
+        step_retries: int = 0,
+        retry_delay: float = 1.0,
+        retry_multiplier: float = 2.0,
     ) -> None:
         self._steps = flow.steps
         self._agents = {a.name: a for a in flow.agents}
@@ -108,6 +115,46 @@ class Swarm:
         self._timeout = timeout
         self._max_retries = max_retries
         self._context_budget = context_budget
+        self._step_retries = step_retries
+        self._retry_delay = retry_delay
+        self._retry_multiplier = retry_multiplier
+
+    async def _with_retry(
+        self,
+        coro_factory: Callable[[], Awaitable[_T]],
+        agent_name: str,
+        hooks: Hooks | None,
+    ) -> _T:
+        """Run a coroutine with step-level retry on AgentError.
+
+        *coro_factory* is called fresh on each attempt so the agent gets a
+        clean execution (new messages list, new tool state).
+        """
+        last_error: AgentError | None = None
+
+        for attempt in range(self._step_retries + 1):
+            try:
+                return await coro_factory()
+            except AgentError as e:
+                last_error = e
+                if attempt < self._step_retries:
+                    delay = self._retry_delay * (self._retry_multiplier**attempt)
+                    if hooks and hooks.is_active:
+                        await hooks.emit(
+                            Event(
+                                EventType.AGENT_RETRY,
+                                AgentRetryData(
+                                    agent=agent_name,
+                                    attempt=attempt + 1,
+                                    max_retries=self._step_retries,
+                                    error=str(e),
+                                    delay=delay,
+                                ),
+                            )
+                        )
+                    await asyncio.sleep(delay)
+
+        raise last_error  # type: ignore[misc]
 
     async def _run_agent_pull(
         self,
@@ -244,8 +291,12 @@ class Swarm:
                             )
                         else:
                             coros.append(
-                                self._run_agent_pull(
-                                    item, task, context, hooks, sub_prev
+                                self._with_retry(
+                                    lambda a=item, p=sub_prev: self._run_agent_pull(
+                                        a, task, context, hooks, p
+                                    ),
+                                    agent_name=item.name,
+                                    hooks=hooks,
                                 )
                             )
                     gathered = await asyncio.gather(*coros)
@@ -260,8 +311,12 @@ class Swarm:
                             current_names.add(g.agent_name)
                     sub_prev = current_names
                 else:
-                    result = await self._run_agent_pull(
-                        step, task, context, hooks, sub_prev
+                    result = await self._with_retry(
+                        lambda s=step, p=sub_prev: self._run_agent_pull(
+                            s, task, context, hooks, p
+                        ),
+                        agent_name=step.name,
+                        hooks=hooks,
                     )
                     results.append(result)
                     sub_prev = {result.agent_name}
@@ -278,8 +333,12 @@ class Swarm:
                             )
                         else:
                             coros.append(
-                                self._run_agent_push(
-                                    item, task, context, hooks, expand, expand_tool
+                                self._with_retry(
+                                    lambda a=item, e=expand: self._run_agent_push(
+                                        a, task, context, hooks, e, expand_tool
+                                    ),
+                                    agent_name=item.name,
+                                    hooks=hooks,
                                 )
                             )
                     gathered = await asyncio.gather(*coros)
@@ -294,8 +353,12 @@ class Swarm:
                             current_names.add(g.agent_name)
                     sub_prev = current_names
                 else:
-                    result = await self._run_agent_push(
-                        step, task, context, hooks, expand, expand_tool
+                    result = await self._with_retry(
+                        lambda s=step, e=expand: self._run_agent_push(
+                            s, task, context, hooks, e, expand_tool
+                        ),
+                        agent_name=step.name,
+                        hooks=hooks,
                     )
                     results.append(result)
                     sub_prev = {result.agent_name}
@@ -353,8 +416,12 @@ class Swarm:
                             )
                         else:
                             coros.append(
-                                self._run_agent_pull(
-                                    item, task, context, hooks, prev_step_names
+                                self._with_retry(
+                                    lambda a=item, p=prev_step_names: (
+                                        self._run_agent_pull(a, task, context, hooks, p)
+                                    ),
+                                    agent_name=item.name,
+                                    hooks=hooks,
                                 )
                             )
                     gathered = await asyncio.gather(*coros)
@@ -370,8 +437,12 @@ class Swarm:
                             current_step_names.add(g.agent_name)
                     prev_step_names = current_step_names
                 else:
-                    result = await self._run_agent_pull(
-                        step, task, context, hooks, prev_step_names
+                    result = await self._with_retry(
+                        lambda s=step, p=prev_step_names: self._run_agent_pull(
+                            s, task, context, hooks, p
+                        ),
+                        agent_name=step.name,
+                        hooks=hooks,
                     )
                     history.append(result)
                     prev_step_names = {result.agent_name}
@@ -395,8 +466,12 @@ class Swarm:
                             )
                         else:
                             coros.append(
-                                self._run_agent_push(
-                                    item, task, context, hooks, expand, expand_tool
+                                self._with_retry(
+                                    lambda a=item, e=expand: self._run_agent_push(
+                                        a, task, context, hooks, e, expand_tool
+                                    ),
+                                    agent_name=item.name,
+                                    hooks=hooks,
                                 )
                             )
                     gathered = await asyncio.gather(*coros)
@@ -412,8 +487,12 @@ class Swarm:
                             current_step_names_push.add(g.agent_name)
                     prev_step_names = current_step_names_push
                 else:
-                    result = await self._run_agent_push(
-                        step, task, context, hooks, expand, expand_tool
+                    result = await self._with_retry(
+                        lambda s=step, e=expand: self._run_agent_push(
+                            s, task, context, hooks, e, expand_tool
+                        ),
+                        agent_name=step.name,
+                        hooks=hooks,
                     )
                     history.append(result)
                     prev_step_names = {result.agent_name}
