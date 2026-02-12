@@ -1,6 +1,6 @@
 [project]
 name = "swarmcore"
-version = "0.3.0"
+version = "0.3.1"
 description = "Coordinate AI agents in a workflow"
 readme = "README.md"
 authors = [
