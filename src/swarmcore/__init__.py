@@ -10,6 +10,7 @@ from swarmcore.flow import Flow, chain, parallel
 from swarmcore.hooks import (
     AgentEndData,
     AgentErrorData,
+    AgentRetryData,
     AgentStartData,
     Event,
     EventType,
@@ -34,6 +35,7 @@ __all__ = [
     "analyst",
     "AgentError",
     "AgentErrorData",
+    "AgentRetryData",
     "AgentResult",
     "AgentStartData",
     "ConsoleReporter",
